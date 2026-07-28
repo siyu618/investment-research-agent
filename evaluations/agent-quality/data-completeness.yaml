@@ -1,0 +1,56 @@
+# Evaluation Case: Data Completeness
+# Tests whether the agent correctly handles and verifies data completeness.
+
+id: data-completeness-v1
+skill: fundamental-analysis
+category: investment-analysis
+version: 1.0.0
+task: >
+  Analyze stock 000001.SZ using fundamental analysis.
+  Identify any data gaps or completeness issues.
+context:
+  - Financial data only available for 2024Q1-2025Q4 (2 years)
+  - Price data has 3 missing days in 2025
+  - Industry: banking
+expected:
+  must_include:
+    - data_source_attribution
+    - data_period_indicator
+    - missing_data_flag
+    - data_quality_warning
+  forbidden:
+    - claiming_data_that_does_not_exist
+    - ignoring_data_gaps
+scoring:
+  threshold: 75
+  correctness:
+    weight: 30
+    description: "Data identification and handling"
+    criteria:
+      - Correctly identifies data period coverage
+      - Flags missing data points
+      - Does not hallucinate data
+  completeness:
+    weight: 25
+    description: "Data coverage and warnings"
+    criteria:
+      - Notes limited data scope (2 years only)
+      - Mentions market data freshness
+  reasoning_quality:
+    weight: 20
+    description: "Quality of data interpretation"
+    criteria:
+      - Distinguishes between confirmed and assumed data
+      - Adjusts confidence based on data completeness
+  risk_awareness:
+    weight: 15
+    description: "Risks from incomplete data"
+    criteria:
+      - Notes that limited data reduces reliability
+      - Flags stale financial data
+  explainability:
+    weight: 10
+    description: "Clarity of data limitations"
+    criteria:
+      - Clear statement of what data was used
+      - Reason for any data exclusions

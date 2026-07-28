@@ -1,0 +1,3 @@
+[submodule "engineering-ai-standards"]
+	path = engineering-ai-standards
+	url = https://github.com/siyu618/engineering-ai-standards.git

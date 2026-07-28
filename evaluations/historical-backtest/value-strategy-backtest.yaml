@@ -1,0 +1,54 @@
+# Evaluation Case: Value Strategy Historical Backtest
+# Tests the value strategy's performance against historical data.
+
+id: value-strategy-backtest-v1
+skill: valuation-analysis
+category: investment-analysis
+version: 1.0.0
+task: >
+  Backtest a value investing strategy on the CSI 300 universe.
+  Select stocks with lowest 20% PE and PB ratios.
+  Rebalance quarterly. Hold equal weight.
+  Period: 2020-01 to 2025-12.
+context:
+  - Universe: CSI 300 constituents
+  - Strategy: Low PE + Low PB value screen
+  - Rebalance: Quarterly
+  - Benchmark: CSI 300 Index
+  - Period: 2020-01 to 2025-12
+expected:
+  must_include:
+    - total_return_calculation
+    - annualized_return
+    - max_drawdown
+    - sharpe_ratio
+    - benchmark_comparison
+    - win_rate
+  forbidden:
+    - survivorship_bias_without_note
+    - ignoring_transaction_costs
+scoring:
+  threshold: 70
+  correctness:
+    weight: 35
+    criteria:
+      - Returns correctly calculated from price data
+      - Max drawdown correctly identified
+      - Sharpe ratio correctly computed
+  completeness:
+    weight: 25
+    criteria:
+      - All standard metrics reported
+      - Benchmark comparison included
+      - Period breakdown provided
+  reasoning_quality:
+    weight: 20
+    criteria:
+      - Performance drivers explained
+      - Regime-dependent performance discussed
+  risk_awareness:
+    weight: 20
+    criteria:
+      - Drawdown periods analyzed
+      - Strategy limitations discussed
+      - Market condition dependency noted

@@ -1,0 +1,90 @@
+# Skill Registry — Tushare Investment Research Agent
+# Central index of all investment analysis skills.
+# Extends the engineering-ai-standards registry format.
+
+version: "1.0.0"
+updated: 2026-07-28
+
+skills:
+  fundamental-analysis:
+    version: 1.0.0
+    owner: strategies-team
+    status: stable
+    category: investment-analysis
+    module: strategies.fundamental-analysis
+    dependencies:
+      - tools/tushare-mcp/README.md
+    evaluation:
+      enabled: true
+      threshold: 75
+      latest_score: null
+      last_run: null
+      cases:
+        - fundamental-analysis-v1
+
+  technical-analysis:
+    version: 1.0.0
+    owner: strategies-team
+    status: stable
+    category: investment-analysis
+    module: strategies.technical-analysis
+    dependencies:
+      - tools/tushare-mcp/README.md
+    evaluation:
+      enabled: true
+      threshold: 70
+      latest_score: null
+      last_run: null
+      cases:
+        - technical-analysis-v1
+
+  valuation-analysis:
+    version: 1.0.0
+    owner: strategies-team
+    status: stable
+    category: investment-analysis
+    module: strategies.valuation-analysis
+    dependencies:
+      - tools/tushare-mcp/README.md
+    evaluation:
+      enabled: true
+      threshold: 75
+      latest_score: null
+      last_run: null
+      cases:
+        - valuation-analysis-v1
+
+  risk-analysis:
+    version: 1.0.0
+    owner: strategies-team
+    status: stable
+    category: investment-analysis
+    module: strategies.risk-analysis
+    dependencies:
+      - tools/tushare-mcp/README.md
+    evaluation:
+      enabled: true
+      threshold: 75
+      latest_score: null
+      last_run: null
+      cases:
+        - risk-analysis-v1
+
+  portfolio-selection:
+    version: 1.0.0
+    owner: strategies-team
+    status: stable
+    category: orchestration
+    module: strategies.portfolio-selection
+    dependencies:
+      - fundamental-analysis
+      - technical-analysis
+      - valuation-analysis
+      - risk-analysis
+    evaluation:
+      enabled: true
+      threshold: 80
+      latest_score: null
+      last_run: null
+      cases:
+        - portfolio-selection-v1

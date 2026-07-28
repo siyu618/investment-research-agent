@@ -1,0 +1,54 @@
+# Evaluation Case: Technical Analysis Skill
+
+id: technical-analysis-v1
+skill: technical-analysis
+category: investment-analysis
+version: 1.0.0
+task: >
+  Analyze 000001.SZ using technical analysis.
+  Evaluate trend direction, moving average relationships, volume patterns, and momentum.
+  Provide a technical score with reasoning.
+context:
+  - Price data from 2024-07 to 2026-07
+  - Stock: 000001.SZ (Ping An Bank)
+  - Current price: 11.50
+  - MA20: 11.20, MA50: 10.80, MA200: 10.50
+  - RSI(14): 62, MACD: positive and above signal line
+expected:
+  must_include:
+    - trend_direction_assessment
+    - moving_average_analysis
+    - volume_trend_discussion
+    - momentum_indicator_values
+    - score_with_rationale
+  forbidden:
+    - claiming_trend_without_data
+    - ignoring_volume_confirmation
+scoring:
+  threshold: 70
+  correctness:
+    weight: 30
+    criteria:
+      - MA relationships correctly interpreted
+      - RSI level correctly assessed
+      - MACD signal correctly read
+  completeness:
+    weight: 25
+    criteria:
+      - Trend, MA, volume, and momentum all analyzed
+      - Multiple timeframes considered if applicable
+  reasoning_quality:
+    weight: 20
+    criteria:
+      - Technical setup explained coherently
+      - Conflicting signals acknowledged
+  risk_awareness:
+    weight: 15
+    criteria:
+      - Overbought/oversold conditions flagged
+      - Volume divergence warning noted
+  explainability:
+    weight: 10
+    criteria:
+      - Score linked to specific indicators
+      - Technical outlook clearly communicated

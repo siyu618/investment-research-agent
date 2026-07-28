@@ -1,0 +1,58 @@
+# Evaluation Case: Reasoning Quality
+# Tests whether the agent's analytical reasoning is logical and well-structured.
+
+id: reasoning-quality-v1
+skill: fundamental-analysis
+category: investment-analysis
+version: 1.0.0
+task: >
+  Analyze 000001.SZ using fundamental analysis.
+  Revenue grew 15%, 12%, 8% over the last 3 years.
+  Net profit margin declined from 12% to 9%.
+  ROE is 11%, debt ratio is 65%.
+  Cash flow from operations is positive but declining.
+  Provide a reasoned fundamental score.
+context:
+  - Stock: 000001.SZ (Ping An Bank)
+  - Industry: banking
+  - Period: 2023-2025
+expected:
+  must_include:
+    - revenue_growth_trend_analysis
+    - profit_decline_rationale
+    - roe_assessment
+    - cash_flow_quality_discussion
+    - score_with_numeric_rationale
+    - strengths_and_weaknesses
+  forbidden:
+    - contradictory_analysis
+    - ignoring_negative_indicators
+scoring:
+  threshold: 75
+  correctness:
+    weight: 30
+    criteria:
+      - Correctly calculates growth rates from given data
+      - Identifies trend direction correctly
+  completeness:
+    weight: 25
+    criteria:
+      - Analyzes all provided metrics
+      - Combines metrics into coherent narrative
+  reasoning_quality:
+    weight: 20
+    criteria:
+      - Logical flow from data to conclusion
+      - Trade-offs acknowledged (e.g., "growth slowing but still positive")
+      - Assumptions explicitly stated
+  risk_awareness:
+    weight: 15
+    criteria:
+      - Flagging profit margin decline
+      - Noting high debt ratio
+      - Cash flow deterioration highlighted
+  explainability:
+    weight: 10
+    criteria:
+      - Score clearly traceable to specific metrics
+      - Each component of score explained

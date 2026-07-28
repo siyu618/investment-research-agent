@@ -1,0 +1,62 @@
+# Evaluation Case: Fundamental Analysis Skill
+# Tests whether the fundamental analysis skill produces correct, complete analysis.
+
+id: fundamental-analysis-v1
+skill: fundamental-analysis
+category: investment-analysis
+version: 1.0.0
+task: >
+  Analyze 600519.SH (Kweichow Moutai) using fundamental analysis.
+  Evaluate revenue growth, profit trends, ROE, debt ratio, and cash flow.
+  Provide a fundamental score with reasoning.
+context:
+  - Financial data from 2023Q1-2025Q4
+  - Industry: liquor/beverage
+  - Known for: premium brand, high margins, strong cash flow
+expected:
+  must_include:
+    - revenue_growth_trend
+    - net_profit_margin_analysis
+    - roe_assessment
+    - debt_ratio_evaluation
+    - cash_flow_health
+    - score_with_rationale
+    - risk_factors
+  forbidden:
+    - hallucinated_financial_metrics
+    - missing_disclaimer
+scoring:
+  threshold: 75
+  correctness:
+    weight: 30
+    description: "Financial metrics correctly derived"
+    criteria:
+      - Revenue growth rate correctly calculated
+      - ROE matches expected range for premium brand (>20%)
+      - Debt ratio correctly noted as low
+  completeness:
+    weight: 25
+    description: "All fundamental dimensions covered"
+    criteria:
+      - All 5 core metrics analyzed
+      - Industry context (liquor sector) considered
+      - Brand moat discussed
+  reasoning_quality:
+    weight: 20
+    description: "Analysis logic"
+    criteria:
+      - Trend analysis covers at least 3 periods
+      - Strengths and weaknesses both discussed
+      - Premium valuation context noted
+  risk_awareness:
+    weight: 15
+    description: "Risk identification"
+    criteria:
+      - At least 3 risk factors identified (regulatory, competition, demand)
+      - Risk severity rated
+  explainability:
+    weight: 10
+    description: "Score traceability"
+    criteria:
+      - Each score component references specific data
+      - Confidence level stated with reasoning
