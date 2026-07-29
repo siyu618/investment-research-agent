@@ -1,0 +1,89 @@
+# Stock Selection Workflow — Executable TaskGraph Definition
+#
+# Screen stocks by user-defined criteria, then run detailed analysis
+# on top candidates.
+#
+# DAG Structure:
+#   screening → market-scan → preliminary-screen → [fundamental, valuation, risk] → selection → report
+
+name: stock-selection
+version: "2.0.0"
+description: >
+  Screen and filter stocks based on user-defined criteria,
+  then perform detailed multi-strategy analysis on top candidates.
+
+config:
+  max_retries: 2
+  default_timeout: 60
+
+nodes:
+  - id: screening-criteria
+    label: "Parse Screening Criteria"
+    skill: planner
+    timeout: 30
+    tags: [planning]
+
+  - id: market-scan
+    label: "Market Scan"
+    skill: data-collector
+    timeout: 120
+    tags: [data]
+
+  - id: preliminary-screen
+    label: "Preliminary Screening"
+    skill: fundamental-analysis
+    timeout: 60
+    tags: [screening]
+
+  - id: fundamental-analysis
+    label: "Fundamental Analysis"
+    skill: fundamental-analysis
+    timeout: 120
+    tags: [analysis, parallel]
+
+  - id: valuation-analysis
+    label: "Valuation Analysis"
+    skill: valuation-analysis
+    timeout: 90
+    tags: [analysis, parallel]
+
+  - id: risk-analysis
+    label: "Risk Assessment"
+    skill: risk-analysis
+    timeout: 90
+    tags: [analysis, parallel]
+
+  - id: final-selection
+    label: "Final Selection & Ranking"
+    skill: portfolio-selection
+    timeout: 60
+    tags: [orchestration]
+
+  - id: report-generation
+    label: "Selection Report"
+    skill: report-generator
+    timeout: 30
+    tags: [reporting]
+
+edges:
+  - from: screening-criteria
+    to: market-scan
+  - from: market-scan
+    to: preliminary-screen
+  - from: preliminary-screen
+    to: fundamental-analysis
+  - from: preliminary-screen
+    to: valuation-analysis
+  - from: preliminary-screen
+    to: risk-analysis
+  - from: fundamental-analysis
+    to: final-selection
+  - from: valuation-analysis
+    to: final-selection
+  - from: risk-analysis
+    to: final-selection
+  - from: final-selection
+    to: report-generation
+
+entry_points: [screening-criteria]
+output_nodes: [report-generation]

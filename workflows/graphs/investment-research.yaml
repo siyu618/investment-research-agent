@@ -1,0 +1,101 @@
+# Investment Research Workflow — Executable TaskGraph Definition
+#
+# This YAML defines the end-to-end investment research process as a DAG.
+# The Scheduler automatically runs independent analysis nodes in parallel.
+#
+# DAG Structure:
+#   planner → data-collector → [fundamental, technical, valuation, risk] → portfolio → verify → report
+
+name: investment-research
+version: "2.0.0"
+description: >
+  End-to-end investment research workflow. Given a user requirement,
+  analyzes stocks using fundamental, technical, valuation, and risk
+  strategies in parallel, then combines scores into a portfolio
+  recommendation.
+
+config:
+  max_retries: 2
+  default_timeout: 60
+
+nodes:
+  - id: requirement-analysis
+    label: "Requirement Analysis"
+    skill: planner
+    timeout: 30
+    tags: [planning]
+
+  - id: data-collection
+    label: "Market Data Collection"
+    skill: data-collector
+    timeout: 120
+    tags: [data]
+
+  - id: fundamental-analysis
+    label: "Fundamental Analysis"
+    skill: fundamental-analysis
+    timeout: 120
+    tags: [analysis, parallel]
+
+  - id: technical-analysis
+    label: "Technical Analysis"
+    skill: technical-analysis
+    timeout: 90
+    tags: [analysis, parallel]
+
+  - id: valuation-analysis
+    label: "Valuation Analysis"
+    skill: valuation-analysis
+    timeout: 90
+    tags: [analysis, parallel]
+
+  - id: risk-analysis
+    label: "Risk Analysis"
+    skill: risk-analysis
+    timeout: 90
+    tags: [analysis, parallel]
+
+  - id: portfolio-selection
+    label: "Portfolio Selection & Ranking"
+    skill: portfolio-selection
+    timeout: 60
+    tags: [orchestration]
+
+  - id: verification
+    label: "Result Verification"
+    skill: verifier
+    timeout: 30
+    tags: [verification]
+
+  - id: report-generation
+    label: "Report Generation"
+    skill: report-generator
+    timeout: 30
+    tags: [reporting]
+
+edges:
+  - from: requirement-analysis
+    to: data-collection
+  - from: data-collection
+    to: fundamental-analysis
+  - from: data-collection
+    to: technical-analysis
+  - from: data-collection
+    to: valuation-analysis
+  - from: data-collection
+    to: risk-analysis
+  - from: fundamental-analysis
+    to: portfolio-selection
+  - from: technical-analysis
+    to: portfolio-selection
+  - from: valuation-analysis
+    to: portfolio-selection
+  - from: risk-analysis
+    to: portfolio-selection
+  - from: portfolio-selection
+    to: verification
+  - from: verification
+    to: report-generation
+
+entry_points: [requirement-analysis]
+output_nodes: [report-generation]

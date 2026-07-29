@@ -9,6 +9,7 @@
 #     bus.subscribe("Tool*", my_handler)
 
 from .event_bus import EventBus
-from .event_types import EventType
+
+from runtime.models import EventType
 
 __all__ = ["EventBus", "EventType"]

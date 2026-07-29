@@ -102,7 +102,7 @@ class Harness:
             )
             self._emit(EventType.PLANNING_COMPLETED, {"plan": str(type(plan))})
 
-            # Step 2: Execute
+            # Step 2: Execute via Executor (which delegates to Scheduler)
             self._emit(EventType.WORKFLOW_STARTED, {
                 "workflow": getattr(plan, "workflow_name", "default"),
             })
@@ -111,6 +111,11 @@ class Harness:
                 lambda: executor.execute_plan(plan),
                 context,
             )
+
+            # Extract GraphResult for observability
+            graph_result = None
+            if hasattr(executor, "get_graph_result"):
+                graph_result = executor.get_graph_result()
 
             # Step 3: Verify
             self._emit(EventType.VERIFICATION_STARTED, {})

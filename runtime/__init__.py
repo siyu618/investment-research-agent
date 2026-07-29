@@ -6,11 +6,53 @@
 # This package is the "Framework Core" — it owns cross-cutting concerns
 # and knows nothing about the investment domain.
 
-from .models import Event, ExecutionContext, RuntimeConfig
-from .errors import AgentError, RecoverableError, FatalError, TimeoutError, SkillError, ToolError
+from .cache import CacheProvider, CachePolicy, TTLCache
+from .errors import AgentError, FatalError, RecoverableError, SkillError, TimeoutError, ToolError
+from .graph import (
+    ExecutionLayer,
+    GraphState,
+    GraphValidationError,
+    build_graph,
+    compute_layers,
+    validate_graph,
+)
+from .harness import Harness
+from .lifecycle import LifecycleHook, LoggingHook
+from .models import (
+    AgentResult,
+    Edge,
+    Event,
+    EventType,
+    ExecutionContext,
+    GraphResult,
+    NodeResult,
+    RuntimeConfig,
+    TaskConfig,
+    TaskGraph,
+    TaskNode,
+    WorkflowDefinition,
+)
+from .scheduler import Scheduler
+from .workflow import WorkflowLoadError, WorkflowRegistry, load_workflow_from_dict, load_workflow_from_yaml
 
 __all__ = [
-    "Event", "ExecutionContext", "RuntimeConfig",
+    # Core models
+    "Event", "EventType", "ExecutionContext", "RuntimeConfig",
+    "AgentResult", "GraphResult", "NodeResult",
+    # Graph
+    "TaskGraph", "TaskNode", "TaskConfig", "Edge",
+    "ExecutionLayer", "GraphState",
+    "GraphValidationError", "build_graph", "compute_layers", "validate_graph",
+    # Scheduler
+    "Scheduler",
+    # Harness
+    "Harness", "LifecycleHook", "LoggingHook",
+    # Errors
     "AgentError", "RecoverableError", "FatalError", "TimeoutError",
     "SkillError", "ToolError",
+    # Cache
+    "CacheProvider", "CachePolicy", "TTLCache",
+    # Workflow
+    "WorkflowDefinition", "WorkflowRegistry",
+    "WorkflowLoadError", "load_workflow_from_dict", "load_workflow_from_yaml",
 ]
