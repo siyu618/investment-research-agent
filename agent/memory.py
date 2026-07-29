@@ -1,144 +1,213 @@
-# Agent Memory — Three-tier memory system (working, episodic, semantic)
+# Agent Memory — CompositeMemoryManager facade
+#
+# Unified interface over all 7 memory tiers.
+# Routes operations to the appropriate tier based on key conventions.
+# Backward-compatible with the previous MemoryManager API.
+
+from __future__ import annotations
 
 import json
-import sqlite3
+import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
+
+from memory.artifacts import ArtifactMemory
+from memory.episodic import EpisodicMemory
+from memory.execution import ExecutionMemory
+from memory.interfaces import MemoryEntry, MemoryProvider, MemoryStats, MemoryTier
+from memory.research import ResearchMemory
+from memory.semantic import SemanticMemory
+from memory.tool_cache import ToolCacheMemory
+from memory.working import WorkingMemory
 
 
-class MemoryManager:
-    """Unified interface for the three-tier memory system.
+class CompositeMemoryManager:
+    """Unified facade over all 7 memory tiers.
 
-    Working memory: in-memory dict (current session context)
-    Episodic memory: SQLite database (past sessions, tool calls)
-    Semantic memory: Markdown files (recommendations, preferences)
+    Routes operations to the right tier:
+    - set/get with key prefix "" → working (backward compat)
+    - set/get with prefix "episodic:" → episodic
+    - set/get with prefix "semantic:" → semantic
+    - set/get with prefix "research:" → research
+    - set/get with prefix "tool:" → tool_cache (for ToolRegistry)
+    - set/get with prefix "exec:" → execution
+    - set/get with prefix "artifact:" → artifacts
+
+    Legacy API (save_session, save_recommendation, etc.)
+    continues to work and routes to the appropriate tier.
     """
 
     def __init__(self, data_dir: str = "memory"):
         self.data_dir = Path(data_dir)
-        self.short_term_dir = self.data_dir / "short-term"
-        self.long_term_dir = self.data_dir / "long-term"
-        self.db_path = self.data_dir / "episodic.db"
 
-        # Working memory (in-memory, per-session)
-        self._working: dict = {}
+        # 7 memory tiers
+        self.working = WorkingMemory()
+        self.episodic = EpisodicMemory(
+            db_path=str(self.data_dir / "episodic.db")
+        )
+        self.semantic = SemanticMemory(
+            directory=str(self.data_dir / "semantic")
+        )
+        self.research = ResearchMemory(
+            db_path=str(self.data_dir / "research.db")
+        )
+        self.tool_cache = ToolCacheMemory(
+            db_path=str(self.data_dir / "tool_cache.db")
+        )
+        self.execution = ExecutionMemory(
+            directory=str(self.data_dir / "execution")
+        )
+        self.artifacts = ArtifactMemory(
+            directory=str(self.data_dir / "artifacts")
+        )
 
-        # Ensure directories exist
-        self.short_term_dir.mkdir(parents=True, exist_ok=True)
-        self.long_term_dir.mkdir(parents=True, exist_ok=True)
+        # Tier lookup by prefix
+        self._tiers: dict[str, MemoryProvider] = {
+            "": self.working,
+            "working:": self.working,
+            "episodic:": self.episodic,
+            "semantic:": self.semantic,
+            "research:": self.research,
+            "tool:": self.tool_cache,
+            "exec:": self.execution,
+            "artifact:": self.artifacts,
+        }
 
-        # Initialize episodic DB
-        self._init_db()
+    # ─── Unified Store/Retrieve ─────────────────────────────────────────
 
-    def _init_db(self):
-        """Create episodic memory tables if they don't exist."""
-        with sqlite3.connect(str(self.db_path)) as conn:
-            conn.executescript("""
-                CREATE TABLE IF NOT EXISTS analysis_sessions (
-                    id TEXT PRIMARY KEY,
-                    created_at TIMESTAMP,
-                    user_requirement TEXT,
-                    plan JSON,
-                    status TEXT DEFAULT 'pending'
-                );
-                CREATE TABLE IF NOT EXISTS tool_calls (
-                    id TEXT PRIMARY KEY,
-                    session_id TEXT REFERENCES analysis_sessions(id),
-                    step_id TEXT,
-                    tool_name TEXT,
-                    input JSON,
-                    output JSON,
-                    duration_ms INTEGER,
-                    success BOOLEAN,
-                    created_at TIMESTAMP
-                );
-                CREATE TABLE IF NOT EXISTS analysis_results (
-                    id TEXT PRIMARY KEY,
-                    session_id TEXT REFERENCES analysis_sessions(id),
-                    skill TEXT,
-                    stock_code TEXT,
-                    score REAL,
-                    confidence REAL,
-                    reasoning TEXT,
-                    risk_factors JSON,
-                    created_at TIMESTAMP
-                );
-            """)
+    async def store(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
+        """Store in the appropriate tier based on key prefix."""
+        tier, inner_key = self._resolve_tier(key)
+        await tier.store(inner_key, value, ttl)
 
-    # ─── Working Memory ────────────────────────────────────────────────
+    async def retrieve(self, key: str) -> Optional[Any]:
+        """Retrieve from the appropriate tier based on key prefix."""
+        tier, inner_key = self._resolve_tier(key)
+        return await tier.retrieve(inner_key)
 
-    def set(self, key: str, value):
-        """Write to working memory."""
-        self._working[key] = value
+    async def delete(self, key: str) -> bool:
+        tier, inner_key = self._resolve_tier(key)
+        return await tier.delete(inner_key)
 
-    def get(self, key: str, default=None):
-        """Read from working memory."""
-        return self._working.get(key, default)
+    async def search(self, query: str, limit: int = 10) -> list[MemoryEntry]:
+        """Search across all tiers. Returns tier-tagged results."""
+        all_results = []
+        for tier in self._tiers.values():
+            results = await tier.search(query, limit)
+            all_results.extend(results)
+        # Sort by created_at desc, limit total
+        all_results.sort(
+            key=lambda e: e.created_at or "",
+            reverse=True,
+        )
+        return all_results[:limit]
 
-    def clear_working(self):
-        """Clear working memory (new session)."""
-        self._working.clear()
+    async def clear(self, pattern: str = "*") -> int:
+        """Clear entries across all tiers."""
+        total = 0
+        for prefix, tier in self._tiers.items():
+            if prefix == "":
+                continue  # skip working (cleared separately)
+            total += await tier.clear(pattern)
+        return total
 
-    # ─── Episodic Memory ───────────────────────────────────────────────
+    async def stats(self) -> dict[str, MemoryStats]:
+        """Get stats for all tiers."""
+        return {tier.tier.value: await tier.stats() for tier in self._tiers.values()}
 
-    def save_session(self, session_id: str, requirement: str, plan: dict):
-        """Record a new analysis session."""
-        with sqlite3.connect(str(self.db_path)) as conn:
-            conn.execute(
-                "INSERT INTO analysis_sessions (id, created_at, user_requirement, plan) VALUES (?, ?, ?, ?)",
-                (session_id, datetime.now().isoformat(), requirement, json.dumps(plan)),
-            )
+    # ─── Legacy Backward Compat API ─────────────────────────────────────
 
-    def get_recent_sessions(self, limit: int = 5) -> list[dict]:
-        """Retrieve recent analysis sessions."""
-        with sqlite3.connect(str(self.db_path)) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                "SELECT * FROM analysis_sessions ORDER BY created_at DESC LIMIT ?",
-                (limit,),
-            ).fetchall()
-            return [dict(r) for r in rows]
+    def set(self, key: str, value: Any) -> None:
+        """Legacy sync set → working memory (backward compat).
 
-    # ─── Semantic Memory ──────────────────────────────────────────────
+        Operates directly on the WorkingMemory dict to avoid
+        event-loop issues in sync contexts.
+        """
+        self.working._data[key] = value
 
-    def save_recommendation(
-        self,
-        stock_code: str,
-        score: float,
-        reasoning: str,
-        strategy: str = "mixed",
-    ):
-        """Save an investment recommendation as a semantic memory file."""
-        date_str = datetime.now().strftime("%Y%m%d")
-        filename = f"recommendation-{stock_code}-{date_str}.md"
-        filepath = self.long_term_dir / filename
+    def get(self, key: str, default: Any = None) -> Any:
+        """Legacy sync get → working memory (backward compat)."""
+        return self.working._data.get(key, default)
 
-        content = f"""---
-name: recommendation-{stock_code}-{date_str}
-description: Investment recommendation for {stock_code}
-metadata:
-  type: recommendation
-  score: {score}
-  strategy: {strategy}
-  created: {datetime.now().isoformat()}
----
+    def clear_working(self) -> None:
+        """Clear working memory for a new session."""
+        self.working._data.clear()
 
-**Stock:** {stock_code}
-**Composite Score:** {score}
-**Reasoning:** {reasoning}
-"""
-        filepath.write_text(content)
+    save_session = None  # set below
+    get_recent_sessions = None
+    save_recommendation = None
+    get_recommendations = None
 
-    def get_recommendations(self, limit: int = 5) -> list[dict]:
-        """List recent recommendations from semantic memory."""
-        files = sorted(self.long_term_dir.glob("*.md"), reverse=True)[:limit]
-        recommendations = []
-        for f in files:
-            # Parse frontmatter and body (simplified)
-            content = f.read_text()
-            recommendations.append({
-                "file": f.name,
-                "content": content,
-            })
-        return recommendations
+    # ─── Tier Resolution ────────────────────────────────────────────────
+
+    def _resolve_tier(self, key: str) -> tuple[MemoryProvider, str]:
+        """Resolve key prefix to a memory tier and inner key."""
+        for prefix, tier in self._tiers.items():
+            if prefix and key.startswith(prefix):
+                return tier, key[len(prefix):]
+        return self.working, key
+
+
+# ─── Attach legacy sync methods ──────────────────────────────────────────
+
+async def _save_session(self, session_id: str, requirement: str, plan: dict) -> None:
+    """Record a new analysis session in episodic memory."""
+    key = f"episodic:session:{session_id}"
+    await self.store(key, {
+        "session_id": session_id,
+        "requirement": requirement,
+        "plan": plan,
+        "created_at": datetime.now().isoformat(),
+        "status": "completed",
+    })
+
+async def _get_recent_sessions(self, limit: int = 5) -> list[dict]:
+    """Retrieve recent analysis sessions from episodic memory."""
+    results = await self.episodic.search("session:", limit)
+    sessions = []
+    for r in results:
+        val = r.value
+        if isinstance(val, dict):
+            sessions.append(val)
+    return sessions
+
+async def _save_recommendation(
+    self, stock_code: str, score: float, reasoning: str, strategy: str = "mixed",
+) -> None:
+    """Save an investment recommendation to semantic memory."""
+    date_str = datetime.now().strftime("%Y%m%d")
+    key = f"semantic:recommendation-{stock_code}-{date_str}"
+    stock_key = f"research:{stock_code}:{date_str}"
+    await self.store(key, {
+        "type": "recommendation",
+        "score": score,
+        "strategy": strategy,
+        "reasoning": reasoning,
+    })
+    await self.store(stock_key, {
+        "stock_code": stock_code,
+        "score": score,
+        "strategy": strategy,
+        "reasoning": reasoning,
+        "tags": [f"stock:{stock_code}", f"strategy:{strategy}"],
+    })
+
+async def _get_recommendations(self, limit: int = 5) -> list[dict]:
+    """List recent recommendations from semantic memory."""
+    results = await self.semantic.search("recommendation", limit)
+    recs = []
+    for r in results:
+        val = r.value
+        if isinstance(val, dict):
+            recs.append(val)
+    return recs
+
+# Attach async methods
+CompositeMemoryManager.save_session = _save_session
+CompositeMemoryManager.get_recent_sessions = _get_recent_sessions
+CompositeMemoryManager.save_recommendation = _save_recommendation
+CompositeMemoryManager.get_recommendations = _get_recommendations
+
+# Short alias
+MemoryManager = CompositeMemoryManager
