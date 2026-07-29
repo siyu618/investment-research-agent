@@ -4,7 +4,7 @@
 # It owns the full lifecycle: Plan → Execute → Verify → Report.
 #
 # Every step is wrapped with:
-#   - Lifecycle hooks (logging, metrics, audit)
+#   - Lifecycle hooks (logging, metrics, audit) with proper drain
 #   - Event emission (observability, tracing, replay)
 #   - Error classification and recovery
 #   - Timeout enforcement
@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from datetime import datetime
 from typing import Any, Callable, Optional
@@ -28,6 +29,8 @@ from runtime.errors import AgentError, RecoverableError, FatalError, TimeoutErro
 from runtime.lifecycle import LifecycleHook
 from runtime.tracing import EventBus
 
+logger = logging.getLogger("agent.harness")
+
 
 class Harness:
     """Unified agent runtime.
@@ -41,9 +44,6 @@ class Harness:
             reporter=my_reporter,
             requirement="Analyze ...",
         )
-
-    The Harness is domain-agnostic. The planner/executor/verifier/reporter
-    are injected — swap them for a different domain.
     """
 
     def __init__(
@@ -55,6 +55,8 @@ class Harness:
         self.event_bus = event_bus or EventBus()
         self.hooks: list[LifecycleHook] = []
         self._correlation_id = ""
+        self._pending_hook_tasks: list[asyncio.Task] = []
+        self.hook_error_count: int = 0
 
     def add_hook(self, hook: LifecycleHook) -> None:
         """Register a lifecycle hook."""
@@ -69,16 +71,7 @@ class Harness:
         requirement: str,
         **kwargs,
     ) -> AgentResult:
-        """Run the full agent lifecycle.
-
-        Lifecycle:
-        1. on_start (hooks)
-        2. Plan   → planner (with retry/timeout)
-        3. Execute → executor (delegates to Scheduler)
-        4. Verify  → verifier (multi-phase checks)
-        5. Report  → reporter (format output)
-        6. on_finish (hooks)
-        """
+        """Run the full agent lifecycle."""
         start_time = datetime.now()
         session_id = f"session-{uuid.uuid4().hex[:12]}"
         context = ExecutionContext(
@@ -90,7 +83,6 @@ class Harness:
         self._correlation_id = session_id
 
         try:
-            # Hook: on_start
             await self._fire_on_start(context)
 
             # Step 1: Plan
@@ -102,7 +94,7 @@ class Harness:
             )
             self._emit(EventType.PLANNING_COMPLETED, {"plan": str(type(plan))})
 
-            # Step 2: Execute via Executor (which delegates to Scheduler)
+            # Step 2: Execute
             self._emit(EventType.WORKFLOW_STARTED, {
                 "workflow": getattr(plan, "workflow_name", "default"),
             })
@@ -111,11 +103,6 @@ class Harness:
                 lambda: executor.execute_plan(plan),
                 context,
             )
-
-            # Extract GraphResult for observability
-            graph_result = None
-            if hasattr(executor, "get_graph_result"):
-                graph_result = executor.get_graph_result()
 
             # Step 3: Verify
             self._emit(EventType.VERIFICATION_STARTED, {})
@@ -138,7 +125,6 @@ class Harness:
                 "report_id": getattr(report, "report_id", "unknown"),
             })
 
-            # Done
             duration = int((datetime.now() - start_time).total_seconds() * 1000)
             self._emit(EventType.WORKFLOW_FINISHED, {
                 "status": "success",
@@ -153,6 +139,7 @@ class Harness:
                 event_count=len(self.event_bus.get_history()),
             )
 
+            await self._drain_hooks()
             await self._fire_on_finish(context, result, None)
             return result
 
@@ -169,16 +156,19 @@ class Harness:
                 total_duration_ms=duration,
                 error=str(e),
             )
+            await self._drain_hooks()
             await self._fire_on_finish(context, result, e)
             return result
 
     async def _run_step(
-        self,
-        step_name: str,
-        step_fn: Callable,
-        context: ExecutionContext,
+        self, step_name: str, step_fn: Callable, context: ExecutionContext,
     ) -> Any:
-        """Execute a single step with retry/timeout/error handling."""
+        """Execute a step with retry/timeout/error handling.
+
+        NOTE: Harness retries ONLY the top-level step.
+        Sub-steps (within Scheduler) have their own retry policies.
+        This prevents double-retry amplification.
+        """
         last_error = None
         for attempt in range(1 + self.config.max_retries):
             try:
@@ -189,60 +179,89 @@ class Harness:
             except asyncio.TimeoutError:
                 last_error = TimeoutError(
                     f"Step '{step_name}' timed out after {self.config.default_timeout}s",
-                    context={"attempt": attempt},
                 )
                 self._emit(EventType.ERROR_ENCOUNTERED, {
-                    "step": step_name,
-                    "error": str(last_error),
-                    "attempt": attempt,
+                    "step": step_name, "error": str(last_error), "attempt": attempt,
                     "will_retry": attempt < self.config.max_retries,
                 })
-                # Timeout can be retried once
                 if attempt < self.config.max_retries:
                     await self._fire_on_error(context, last_error, step_name)
                     continue
                 raise last_error
-
             except RecoverableError as e:
                 last_error = e
                 self._emit(EventType.ERROR_ENCOUNTERED, {
-                    "step": step_name,
-                    "error": str(e),
-                    "attempt": attempt,
+                    "step": step_name, "error": str(e), "attempt": attempt,
                     "will_retry": attempt < self.config.max_retries,
                 })
                 if attempt < self.config.max_retries:
                     await self._fire_on_error(context, e, step_name)
-                    delay = e.retry_after or (self.config.default_timeout * 0.5)
+                    delay = e.retry_after or 1.0
                     await asyncio.sleep(delay)
                     continue
-                raise FatalError(
-                    f"Step '{step_name}' failed after {self.config.max_retries} retries",
-                    context={"last_error": str(e)},
-                )
-
+                raise FatalError(f"Step '{step_name}' failed after {self.config.max_retries} retries")
             except FatalError:
                 raise
-
             except Exception as e:
-                last_error = e
                 self._emit(EventType.ERROR_ENCOUNTERED, {
-                    "step": step_name,
-                    "error": str(e),
-                    "attempt": attempt,
+                    "step": step_name, "error": str(e), "attempt": attempt,
                     "will_retry": False,
                 })
                 await self._fire_on_error(context, e, step_name)
-                raise FatalError(
-                    f"Step '{step_name}' failed with unexpected error",
-                    context={"error": str(e)},
-                )
+                raise FatalError(f"Step '{step_name}' failed with unexpected error: {e}")
+        raise FatalError(f"Step '{step_name}' failed after all retries")
 
-        # Should not reach here, but safety net
-        raise FatalError(
-            f"Step '{step_name}' failed after all retries",
-            context={"last_error": str(last_error)},
-        )
+    # ─── Hook Management ────────────────────────────────────────────────
+
+    def _fire_hook_event(self, event: Event) -> None:
+        """Fire hook.on_event without blocking the main flow.
+
+        Hook exceptions are logged but do not interrupt the agent.
+        Failed tasks are tracked and drained before finish.
+        """
+        for hook in self.hooks:
+            try:
+                task = asyncio.ensure_future(hook.on_event(event))
+                self._pending_hook_tasks.append(task)
+            except Exception:
+                self.hook_error_count += 1
+                logger.exception("Failed to schedule hook.on_event")
+
+    async def _drain_hooks(self) -> None:
+        """Wait for all pending hook tasks and log any exceptions."""
+        tasks = self._pending_hook_tasks[:]
+        self._pending_hook_tasks.clear()
+        if not tasks:
+            return
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for r in results:
+            if isinstance(r, Exception):
+                self.hook_error_count += 1
+                logger.error("Hook task failed: %s", r)
+
+    async def _fire_on_start(self, context: ExecutionContext) -> None:
+        for hook in self.hooks:
+            try:
+                await hook.on_start(context)
+            except Exception:
+                self.hook_error_count += 1
+                logger.exception("Hook on_start failed")
+
+    async def _fire_on_error(self, context, error, step) -> None:
+        for hook in self.hooks:
+            try:
+                await hook.on_error(context, error, step)
+            except Exception:
+                self.hook_error_count += 1
+                logger.exception("Hook on_error failed")
+
+    async def _fire_on_finish(self, context, result, error) -> None:
+        for hook in self.hooks:
+            try:
+                await hook.on_finish(context, result, error)
+            except Exception:
+                self.hook_error_count += 1
+                logger.exception("Hook on_finish failed")
 
     def _emit(self, event_type: str, payload: dict) -> None:
         """Emit an event through the EventBus."""
@@ -254,35 +273,4 @@ class Harness:
             payload=payload,
         )
         self.event_bus.emit(event)
-
-        # Also notify lifecycle hooks
-        for hook in self.hooks:
-            try:
-                asyncio.ensure_future(hook.on_event(event))
-            except Exception:
-                pass
-
-    async def _fire_on_start(self, context: ExecutionContext) -> None:
-        for hook in self.hooks:
-            try:
-                await hook.on_start(context)
-            except Exception:
-                pass
-
-    async def _fire_on_error(
-        self, context: ExecutionContext, error: Exception, step: str
-    ) -> None:
-        for hook in self.hooks:
-            try:
-                await hook.on_error(context, error, step)
-            except Exception:
-                pass
-
-    async def _fire_on_finish(
-        self, context: ExecutionContext, result: Any, error: Optional[Exception]
-    ) -> None:
-        for hook in self.hooks:
-            try:
-                await hook.on_finish(context, result, error)
-            except Exception:
-                pass
+        self._fire_hook_event(event)

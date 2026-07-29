@@ -1,415 +1,228 @@
 # Tushare Investment Research Agent
 
-A production-grade AI agent system for automated investment research using Tushare financial data. Built as a **reference implementation** of the [engineering-ai-standards](engineering-ai-standards/) framework — demonstrating skill-based agent architecture, MCP tool integration, multi-strategy analysis, verification loops, and automated evaluation.
+An AI Agent system for automated investment research. Built as a **reference implementation** of the [engineering-ai-standards](engineering-ai-standards/) agent framework — demonstrating skill-based architecture, DAG workflow orchestration, MCP-style tool integration, multi-strategy analysis, verification loops, and trajectory evaluation.
 
-> ⚠️ **Disclaimer**: This system generates investment research reports for reference only. It does **not** constitute financial advice. Past performance is not indicative of future results. Always conduct your own research before making investment decisions.
-
----
-
-## Architecture Overview
-
-```
-                        ┌──────────────┐
-                        │    User      │
-                        │ (Requirement)│
-                        └──────┬───────┘
-                               │
-                               ▼
-┌───────────────────────────────────────────────────────────┐
-│                    Agent Core                              │
-│  ┌─────────────────────────────────────────────────────┐  │
-│  │  Planner → Executor → Verifier → Report Generator   │  │
-│  │  ┌──────────────────────────────────────────────┐   │  │
-│  │  │  Memory System (Working / Episodic / Semantic) │   │  │
-│  │  └──────────────────────────────────────────────┘   │  │
-│  └─────────────────────────────────────────────────────┘  │
-└───────────────────────────────────────────────────────────┘
-                               │
-                               ▼
-┌───────────────────────────────────────────────────────────┐
-│  Skills Layer (Fundamental · Technical · Valuation · Risk)│
-│  Each skill: SKILL.md + analyzer.py + eval/ + examples/   │
-└───────────────────────────────────────────────────────────┘
-                               │
-                               ▼
-┌───────────────────────────────────────────────────────────┐
-│  MCP Layer (Tushare Data · Market Cache · Backtest Engine)│
-└───────────────────────────────────────────────────────────┘
-                               │
-                               ▼
-                        ┌───────────────┐
-                        │   Tushare API │
-                        └───────────────┘
-```
-
-## Key Design Decisions
-
-| Decision | Choice | Rationale |
-|----------|--------|-----------|
-| **Agent Pattern** | Orchestrated + ReAct Hybrid | Structured workflow with flexible ReAct loops per skill |
-| **Skill System** | Per-skill modules (eng-ai-standards format) | Independent versioning, evaluation, and replacement |
-| **Memory** | Three-tier (Working/Episodic/Semantic) | In-memory dict + SQLite + Markdown files |
-| **Data Access** | MCP Server over Tushare API | Standardized tool discovery, validation, and observability |
-| **Evaluation** | Dual-track (Strategy + Agent Quality) | Separates investment performance from analysis quality |
-
-See [docs/adr/](docs/adr/) for all Architecture Decision Records.
+> ⚠️ **免责声明**：本系统生成的报告仅供研究参考，不构成投资建议。当前使用 Mock 模拟数据，尚未接入真实 TuShare 数据。过往表现不代表未来收益。
 
 ---
 
-## Repository Structure
-
-```
-tushare-investment-agent/
-├── agent/                          # Agent core components
-│   ├── planner.py                  # Requirement → analysis plan
-│   ├── executor.py                 # Plan execution & skill orchestration
-│   ├── memory.py                   # Three-tier memory manager
-│   ├── verifier.py                 # Multi-phase verification
-│   ├── report_generator.py         # Investment report generation
-│   ├── registry.py                 # Skill registry loader
-│   └── __main__.py                 # CLI entry point
-│
-├── strategies/                     # Investment analysis skills
-│   ├── base/models.py              # Shared interfaces & data models
-│   ├── fundamental-analysis/       # Fundamental analysis skill
-│   ├── technical-analysis/         # Technical analysis skill
-│   ├── valuation-analysis/         # Valuation analysis skill
-│   ├── risk-analysis/              # Risk analysis skill
-│   └── portfolio-selection/        # Portfolio selection skill
-│
-├── tools/                          # MCP servers & data tools
-│   ├── tushare-mcp/                # Tushare API MCP server
-│   ├── market-data/                # Local data cache
-│   └── backtest/                   # Backtesting engine
-│
-├── workflows/                      # Workflow definitions
-│   ├── investment-research.md      # End-to-end research workflow
-│   ├── portfolio-review.md         # Portfolio review workflow
-│   └── stock-selection.md          # Stock screening workflow
-│
-├── evaluations/                    # Evaluation cases
-│   ├── strategy-score/             # Strategy performance evaluation
-│   ├── agent-quality/              # Agent output quality evaluation
-│   └── historical-backtest/        # Historical strategy backtesting
-│
-├── registry/skills.yaml            # Central skill registry
-│
-├── memory/                         # Long-term semantic memory
-│   ├── short-term/                 # Per-session working memory
-│   └── long-term/                  # Cross-session knowledge
-│
-├── reports/                        # Generated investment reports
-│
-├── docs/
-│   ├── design.md                   # Full system design document
-│   └── adr/                        # Architecture Decision Records
-│       ├── 001-agent-architecture.md
-│       ├── 002-skill-system.md
-│       ├── 003-memory-architecture.md
-│       ├── 004-mcp-integration.md
-│       └── 005-evaluation-framework.md
-│
-├── tests/                          # Test suite
-├── requirements.txt                # Python dependencies
-└── CLAUDE.md                       # Project instructions
-```
-
----
-
-## Agent Components
-
-### Planner
-
-Decomposes natural language investment requirements into structured analysis plans.
-
-**Input:** User requirement (e.g., "Find investment opportunities under medium risk preference")
-**Output:** `AnalysisPlan` with objective, strategy weights, data requirements, and ordered analysis steps
-
-### Executor
-
-Carries out the analysis plan by invoking skills and MCP tools. Handles step dependencies, parallel execution, retries, and partial results.
-
-- Topological sort by step dependencies
-- In-order execution with parallelism for independent steps
-- Each skill runs in a ReAct loop (Think → Act → Observe) using MCP tools
-- Configurable max retries (default: 2) and per-step timeout (default: 30s)
-
-### Memory System
-
-Three-tier memory following the [engineering-ai-standards memory policy](engineering-ai-standards/runtime/memory-policy.md):
-
-| Tier | Storage | Contents | Persistence |
-|------|---------|----------|-------------|
-| Working | Python dict | Current session context, intermediate results | Volatile (per-session) |
-| Episodic | SQLite | Session history, tool calls, previous analyses | Persistent |
-| Semantic | Markdown files | Recommendations, preferences, evaluation history | Persistent, git-tracked |
-
-### Verifier
-
-Multi-phase verification before report generation:
-
-1. **Data completeness** — All expected data points present; financials from expected period; prices physically reasonable
-2. **Strategy consistency** — Scores internally coherent; assigned weights match executed analysis
-3. **Risk validation** — Every recommendation has risk warnings; high-risk positions flagged
-4. **Historical alignment** (optional) — Strategy performs consistently in backtests
-
-### Report Generator
-
-Template-driven report generation with structured markdown output.
-
----
-
-## Skills
-
-Each investment strategy is a skill module following the engineering-ai-standards format:
-
-```
-strategies/<name>/
-├── SKILL.md           # LLM-readable instructions
-├── metadata.yaml      # Machine-readable registry metadata
-├── analyzer.py        # Python analysis implementation
-├── prompt.md          # LLM prompt template
-├── examples/          # Example inputs/outputs
-├── eval/              # Evaluation cases
-└── CHANGELOG.md       # Version history with backtest results
-```
-
-### Available Skills
-
-| Skill | Purpose | Key Metrics | Default Weight |
-|-------|---------|-------------|:------:|
-| **fundamental-analysis** | Financial health & business quality | Revenue growth, ROE, debt ratio, cash flow, industry position | 40% |
-| **technical-analysis** | Price trends & momentum | Trend, MA crossovers, volume, RSI, MACD | 20% |
-| **valuation-analysis** | Fair value assessment | PE, PB, PEG, historical percentile, peer comparison | 20% |
-| **risk-analysis** | Downside & volatility | Volatility, max drawdown, liquidity, beta | 20% |
-| **portfolio-selection** | Composite scoring & ranking | Composite score, diversification, sector exposure | Orchestration |
-
----
-
-## Workflows
-
-### Investment Research
-
-```
-User Requirement → Plan → Collect Data → Analyze (×4 in parallel) → Combine → Verify → Report
-```
-
-The primary workflow. Given a user's investment requirement, the agent conducts full-spectrum analysis and produces a structured report.
-
-### Portfolio Review
-
-```
-Existing Holdings → Risk Analysis → Performance Analysis → Rebalance Recommendation → Report
-```
-
-Analyze an existing portfolio, identify risks, evaluate performance, and suggest rebalancing.
-
-### Stock Selection
-
-```
-Screening Criteria → Market Scan → Filter → Detailed Analysis → Rank → Report
-```
-
-Screen stocks by user-defined criteria, then perform detailed analysis on top candidates.
-
----
-
-## MCP Tools
-
-The Tushare MCP Server exposes these tools to the agent:
-
-| Tool | Description | Read/Write |
-|------|-------------|:----------:|
-| `get_stock_basic` | List stocks by market/industry | Read |
-| `get_daily_price` | Daily OHLCV price data | Read |
-| `get_trade_calendar` | Trading calendar dates | Read |
-| `get_income_statement` | Income statement data | Read |
-| `get_balance_sheet` | Balance sheet data | Read |
-| `get_cashflow` | Cash flow statement data | Read |
-| `get_money_flow` | Capital flow data | Read |
-| `get_holder_change` | Major holder changes | Read |
-| `get_market_index` | Market index OHLCV | Read |
-
-All tools are **read-only** — no write operations are exposed to the agent.
-
----
-
-## Evaluation Framework
-
-The system implements a **dual-track evaluation**:
-
-### Track 1: Strategy Performance
-
-Objective backtest-based evaluation using historical data:
-
-| Metric | Description |
-|--------|-------------|
-| **Return** | Total and annualized return |
-| **Max Drawdown** | Maximum peak-to-trough decline |
-| **Sharpe Ratio** | Risk-adjusted return |
-| **Win Rate** | Percentage of profitable periods |
-
-### Track 2: Agent Quality
-
-Evaluation of analytical output quality:
-
-| Dimension | Weight | Criteria |
-|-----------|--------|----------|
-| Correctness | 30% | Data accuracy, calculation validity, no hallucinated metrics |
-| Completeness | 25% | All dimensions covered, data sources cited, risks documented |
-| Reasoning Quality | 20% | Logical flow, trade-offs acknowledged, assumptions stated |
-| Risk Awareness | 15% | Risks identified, severity assessed, mitigation suggested |
-| Explainability | 10% | Scores traceable to data, reasoning human-readable |
-
-Evaluation cases follow the engineering-ai-standards [evaluation case schema](engineering-ai-standards/evaluations/schema.yaml) and reuse the [evaluation runner](engineering-ai-standards/evaluations/runner/evaluator.py).
-
----
-
-## Getting Started
-
-### Prerequisites
-
-- Python 3.11+
-- Tushare API token ([register here](https://tushare.pro/register?reg=124432))
-- pip
-
-### Installation
+## 快速开始
 
 ```bash
-# Clone the repository
-git clone https://github.com/your-org/tushare-investment-agent.git
-cd tushare-investment-agent
+# 运行投资研究（Mock 数据，无需 API Key）
+python -m agent --requirement "从沪深300筛选基本面稳健、估值合理且中等风险的5只股票"
 
-# Install dependencies
-pip install -r requirements.txt
-
-# Set Tushare token
-export TUSHARE_TOKEN=your_token_here
-```
-
-### Running
-
-```bash
-# Run research for a specific requirement
-python -m agent --requirement "Find investment opportunities under medium risk preference"
-
-# Interactive mode
+# 交互模式
 python -m agent --interactive
 
-# Portfolio review
-python -m agent --workflow portfolio-review --portfolio portfolio.json
+# 带执行跟踪
+python -m agent --requirement "筛选5只低风险股票" --trace
 ```
 
-### Development
+### 示例输出
+
+运行 `python -m agent --requirement "从沪深300筛选基本面稳健、估值合理且中等风险的5只股票"`：
+
+```
+# 📊 投资研究报告
+
+## 一、用户需求
+stock_pool=csi300 objective=quality risk=medium top_k=5
+策略权重: fundamental-analysis=50%, valuation-analysis=20%, risk-analysis=20%, technical-analysis=10%
+
+## 二、市场概况
+共从股票池中获取 15 只股票数据。
+
+## 三、候选股票评分及排名
+| 排名 | 股票代码 | 股票名称 | 行业 | 基本面 | 估值 | 风险 | 综合 |
+|------|----------|----------|------|--------|------|------|------|
+| 🥇 | 600900.SH | 长江电力 | 电力 | 0.61 | 0.77 | 0.56 | **0.63** |
+| 🥈 | 002415.SZ | 海康威视 | 计算机 | 0.49 | 0.83 | 0.56 | **0.60** |
+...
+
+📝 分析说明
+基本面评分: 0.61/1.00
+  ROE: 80% → 贡献0.200 (ROE=15.2%)
+  营收增长: 40% → 贡献0.080 (平均增速=0.0%)
+  ...
+```
+
+---
+
+## 系统架构
+
+```
+                        ┌──────────────────┐
+                        │     User CLI      │
+                        └────────┬─────────┘
+                                 │
+                    ┌────────────┴────────────┐
+                    │         Harness          │
+                    │  Plan→Execute→Verify→Rpt│
+                    └────────────┬────────────┘
+                                 │
+              ┌──────────────────┼──────────────────┐
+              ▼                  ▼                  ▼
+     ┌────────────────┐ ┌────────────────┐ ┌────────────────┐
+     │   Scheduler     │ │   Verifier     │ │ ReportGenerator│
+     │ (DAG / 并行)    │ │ (5-phase)      │ │ (Markdown)     │
+     └───────┬────────┘ └────────────────┘ └────────────────┘
+             │
+    ┌────────┴────────┐
+    │  Skill Executor  │
+    │  (ReAct Loop)    │
+    └────────┬────────┘
+             │
+    ┌────────┴────────┐
+    │ MarketDataProvider│  ← 抽象数据接口
+    │ (Mock|Tushare)   │
+    └────────┬────────┘
+             │
+    ┌────────┴────────┐
+    │  15 CSI 300      │  ← Mock 股票池
+    │  Mock 数据       │
+    └─────────────────┘
+```
+
+---
+
+## 能力状态
+
+### ✅ 已实现能力
+
+| 能力 | 说明 |
+|------|------|
+| **Planner** | 规则解析 + Pydantic 结构化输出，支持中英文需求 |
+| **MarketDataProvider** | `MarketDataProvider` 抽象协议，12 只股票 Mock 数据 |
+| **基本面分析** | ROE、营收/利润增长率、现金流质量、负债率、毛利率 |
+| **估值分析** | PE/PB 相对分位评分 |
+| **风险分析** | 年化波动率、最大回撤评分 |
+| **组合评分** | 多策略加权综合评分 |
+| **Verifier** | 5 阶段验证（数据新鲜度、未来函数、权重、缺失数据、证据） |
+| **Report Generator** | Markdown 表格 + 详细分析说明 |
+| **DAG Scheduler** | 自动检测并行节点，分层并发执行 |
+| **Skill SDK** | 5 阶段生命周期（metadata/plan/execute/verify/summarize） |
+| **Tool Registry** | 元数据驱动的工具注册 + Schema 校验 + 缓存 + 限流 |
+| **Memory 7-tier** | Working/Episodic/Semantic/Research/ToolCache/Execution/Artifacts |
+| **EventBus** | 25+ 事件类型，支持 subscribe/replay/export |
+| **Trajectory Evaluation** | 6 维度执行路径评分 |
+| **CLI 一键运行** | `python -m agent --requirement "..."` |
+
+### 🔲 规划能力
+
+| 能力 | 依赖 | 优先级 |
+|------|------|--------|
+| TuShare 真实数据接入 | Tushare Token + `OfficialTushareMCPProvider` | 高 |
+| LLM 集成（Planner/Verifier） | LLM API Key + structured output | 中 |
+| 技术分析 Skill | 需补充价格形态识别 | 中 |
+| 回测引擎 | 需历史持仓数据 | 低 |
+| Web UI / Dashboard | Streamlit/Gradio | 低 |
+| CI Pipeline | GitHub Actions | 低 |
+
+---
+
+## 测试
 
 ```bash
-# Run tests
+# 运行全部 206 个测试
 pytest tests/
 
-# Run evaluation cases
-python -m evaluations.runner.evaluator --case fundamental-analysis-v1
+# 确定性指标计算测试
+pytest tests/strategies/test_fundamental_metrics.py
 
-# Validate skill registry
-python -m evaluations.runner.run --registry registry/skills.yaml
+# 集成测试
+pytest tests/evaluations/test_mock_e2e.py
+
+# Planner 测试
+pytest tests/strategies/test_planner.py
 ```
 
 ---
 
-## Example User Scenarios
+## 项目结构
 
-### Scenario 1: Value Investment Research
-
-> **User:** "Find undervalued stocks in the SSE 180 with strong fundamentals and low risk."
-
-**Agent Process:**
-1. Planner classifies as value investment with low risk preference
-2. Strategy weights: Fundamental 45%, Valuation 25%, Technical 10%, Risk 20%
-3. Data collection: SSE 180 constituents → financials → prices
-4. Fundamental analysis: screens for ROE > 15%, debt < 50%, positive cash flow
-5. Valuation analysis: screens for PE < industry average, PB < 1.5
-6. Risk analysis: volatility < 30%, liquidity > 10M daily volume
-7. Portfolio selection: ranks candidates, produces top-5 recommendations
-8. Verification: checks data completeness, strategy consistency
-9. Report generated with full analysis
-
-### Scenario 2: Portfolio Review
-
-> **User:** "Review my portfolio: 000001.SZ (30%), 600519.SH (40%), 300750.SZ (30%). Medium risk."
-
-### Scenario 3: Growth Stock Screening
-
-> **User:** "Find growth stocks in the tech sector with revenue growth > 20% and reasonable PE."
-
----
-
-## Evaluation Design
-
-### Strategy Performance Evaluation
-
-```yaml
-evaluation:
-  strategy: value-investing
-  period: 2020-2025
-  universe: CSI 300
-  metrics:
-    return: 12.5%
-    max_drawdown: -15.3%
-    sharpe_ratio: 0.85
-    win_rate: 68%
 ```
+agent/                    # 业务逻辑（投资领域）
+├── planner.py           # 需求解析 → AnalysisPlan
+├── executor.py          # Scheduler 桥接 + Skill 编排
+├── verifier.py          # 5 阶段验证
+├── report_generator.py  # Markdown 报告
+├── memory.py            # 7 层 Memory 外观
+└── __main__.py          # CLI 入口
 
-### Agent Quality Evaluation
+runtime/                 # 框架核心（领域无关）
+├── harness.py           # 生命周期管理
+├── scheduler.py         # DAG 并行调度
+├── graph.py             # TaskGraph 验证 + 拓扑排序
+├── workflow.py          # YAML → TaskGraph
+├── models.py            # 事件/状态/图模型
+├── errors.py            # 错误分类
+└── tracing/             # EventBus + 格式化器
 
-```yaml
-evaluation:
-  case: fundamental-analysis-v1
-  skill: fundamental-analysis
-  scoring:
-    correctness: 85/100
-    completeness: 80/100
-    reasoning_quality: 78/100
-    risk_awareness: 72/100
-    explainability: 75/100
-  overall: 79/100
+strategies/              # 分析策略 Skills
+├── fundamental_analysis/  # 基本面评分（已实现）
+├── valuation_analysis/    # 估值评分（已实现）
+├── risk_analysis/         # 风险评分（已实现）
+└── base/                  # Skill SDK + 数据模型
+
+tools/
+├── providers.py          # MarketDataProvider 协议 + Mock
+├── registry.py           # 元数据驱动工具注册
+└── tushare-mcp/          # TuShare MCP 扩展位置
+
+memory/                   # 7 层内存系统
+├── working.py / episodic.py / semantic.py / ...
 ```
 
 ---
 
-## Future Improvements
+## 关键架构决策
 
-| Area | Improvement | Priority |
-|------|-------------|----------|
-| **LLM Integration** | Wire up actual LLM (GPT-4/Claude) for Planner, Verifier, and skill execution | P0 |
-| **Tushare MCP** | Implement full MCP server with live API connection | P0 |
-| **Backtest Engine** | Full backtesting with transaction costs and slippage | P1 |
-| **Vector Memory** | Embedding-based semantic search for memory retrieval | P2 |
-| **Multi-user** | Session management and per-user memory isolation | P2 |
-| **Web UI** | Streamlit/Gradio interface for interactive reports | P2 |
-| **CI Pipeline** | GitHub Actions for evaluation regression detection | P1 |
-| **More Strategies** | Momentum, dividend, quantitative factor strategies | P2 |
-| **NLP Sentiment** | News sentiment analysis as additional signal | P3 |
-| **Real-time Data** | WebSocket connection for live market data | P3 |
+| 决策 | 选择 | 替代方案 | 理由 |
+|------|------|----------|------|
+| 数据抽象 | `MarketDataProvider` 协议 | 直接调用 Tushare | 可测试性，技能不绑定具体数据源 |
+| Planner | 规则解析 + 模板化 Plan | LLM 生成任意 Graph | 可控性，确定性测试 |
+| 重试边界 | Tool 层处理网络抖动，Scheduler 处理节点失败 | 多层重试 | 避免指数放大 |
+| 异步 Hook | `ensure_future` + drain 机制 | fire-and-forget | 不阻塞主流程同时记录错误 |
+| 报告格式 | Markdown | PDF/HTML | 可直接查看，无需额外渲染 |
+| 模拟数据 | MockMarketDataProvider（15 只 CSI 300） | 全量 A 股 | 测试确定性，运行快速 |
 
 ---
 
-## Related Documents
+## 已知限制
 
-- [System Design Document](docs/design.md) — Full architecture, data flow, and design decisions
-- [ADR-001: Agent Architecture](docs/adr/001-agent-architecture.md) — Why Orchestrated + ReAct hybrid
-- [ADR-002: Skill System](docs/adr/002-skill-system.md) — Why per-skill modules
-- [ADR-003: Memory Architecture](docs/adr/003-memory-architecture.md) — Why three-tier memory
-- [ADR-004: MCP Integration](docs/adr/004-mcp-integration.md) — Why MCP for data access
-- [ADR-005: Evaluation Framework](docs/adr/005-evaluation-framework.md) — Why dual-track evaluation
-- [engineering-ai-standards](engineering-ai-standards/) — The framework this project extends
+1. **Mock 数据**：当前使用确定性哈希生成模拟财务和价格数据，不反映真实市场
+2. **无 LLM**：Planner 使用规则解析，Skills 使用算法计算，未接入 LLM
+3. **技术分析未实现**：只有基本面/估值/风险，技术分析 Skill 尚为占位
+4. **Stock 池固定**：Mock 数据固定 15 只代表性股票
+5. **无回测验证**：策略评分未经过历史回测验证
+6. **单进程**：Scheduler 目前为单进程 asyncio 并发
 
 ---
 
-## License
+## 测试结果
 
-MIT
+```
+206 passed in 4.20s
+```
 
-## Acknowledgments
+| 测试类别 | 数量 | 内容 |
+|----------|------|------|
+| Runtime (Graph/Scheduler/Workflow) | 55 | 图验证、拓扑排序、DAG 执行、重试、超时 |
+| Memory (7 tiers) | 67 | 读写、搜索、TTL、过期、断点续跑 |
+| Skills SDK | 19 | 生命周期、适配器、自检 |
+| Tools Registry | 20 | 注册、发现、调用、缓存、限流 |
+| Trajectory Evaluation | 17 | 维度评分、全量评估、空 Trace |
+| Fundamental Metrics | 15 | ROE、增长率、现金流、负债率等确定性计算 |
+| Planner | 7 | 需求分类、权重、依赖排序 |
+| End-to-End | 4 | Planner→Executor→Report 全链路 |
+| **Total** | **206** | |
 
-- [Tushare Pro](https://tushare.pro/) for providing Chinese financial market data
-- [engineering-ai-standards](engineering-ai-standards/) for the agent architecture framework
-- [Model Context Protocol](https://modelcontextprotocol.io/) for the tool integration standard
+---
+
+## 参考文献
+
+- [设计文档](docs/design.md)
+- [演进路线图](docs/evolutionary-roadmap.md)
+- [ADR-001~011](docs/adr/)
+- [engineering-ai-standards](engineering-ai-standards/)
