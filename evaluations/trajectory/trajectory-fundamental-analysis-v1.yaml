@@ -1,0 +1,78 @@
+# Trajectory Evaluation Case — Agent Execution Path Scoring
+#
+# Scores the full execution trajectory of an agent run, not just the output.
+# Measures: planning quality, tool selection, error recovery, efficiency.
+
+id: trajectory-fundamental-analysis-v1
+skill: fundamental-analysis
+category: trajectory
+version: 1.0.0
+task: >
+  Analyze 000001.SZ using fundamental analysis.
+  The agent should collect financial data, analyze metrics,
+  reason about trends, and produce a score.
+
+expectations:
+  optimal_node_count: 5
+  optimal_tool_call_count: 6
+  expected_duration_ms: 30000
+  expected_retry_count: 0
+  required_events:
+    - PlanningStarted
+    - GraphResolved
+    - ToolInvoked
+    - SkillStarted
+    - SkillCompleted
+    - VerificationCompleted
+  forbidden_events:
+    - NodeFailed
+
+scoring:
+  dimensions:
+    planning:
+      weight: 15
+      description: "Quality of requirement decomposition and graph construction"
+      criteria:
+        - "Plan was produced (PlanningStarted/Completed events present)"
+        - "Graph resolved with correct node count"
+        - "Entry points and output nodes are reasonable"
+
+    tool_selection:
+      weight: 20
+      description: "Appropriateness and efficiency of tool usage"
+      criteria:
+        - "Required financial tools were called"
+        - "No unnecessary or duplicate tool calls"
+        - "Tool cache was utilized"
+
+    execution_efficiency:
+      weight: 20
+      description: "Completion speed and resource usage"
+      criteria:
+        - "Total duration within expected bounds"
+        - "Node count matches expected optimal path"
+        - "No excessive retries"
+
+    error_recovery:
+      weight: 20
+      description: "Quality of error handling and recovery"
+      criteria:
+        - "Errors are handled gracefully (recovered vs fatal)"
+        - "Retry backoff is appropriate"
+        - "Non-recoverable errors are escalated properly"
+
+    verification:
+      weight: 15
+      description: "Thoroughness of self-verification"
+      criteria:
+        - "Verification checks were performed"
+        - "All checks passed or failures were justified"
+        - "Warnings were documented"
+
+    overall_quality:
+      weight: 10
+      description: "Holistic trajectory quality"
+      criteria:
+        - "All required events are present"
+        - "No forbidden events occurred"
+        - "Overall flow is coherent and complete"
