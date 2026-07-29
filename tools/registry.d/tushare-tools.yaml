@@ -1,0 +1,118 @@
+# Tushare MCP Tools — Metadata declarations
+#
+# Each tool declares its schema, capability, cache policy, and rate limit.
+# The ToolRegistry loads this file to register all Tushare tools.
+
+tools:
+  get_stock_basic:
+    description: "List stocks by market and/or industry"
+    capability: "market-data"
+    timeout: 10
+    cost: 1
+    version: "1.0.0"
+    permission: "read"
+    rate_limit: "200/min"
+    cache_policy:
+      ttl: 86400
+      key_prefix: "stock_basic"
+    tags: [stocks, screening]
+    errors:
+      - "TushareRateLimitError"
+      - "TushareAuthError"
+
+  get_daily_price:
+    description: "Get daily OHLCV price data for a stock over a date range"
+    capability: "market-data"
+    timeout: 15
+    cost: 1
+    version: "1.0.0"
+    permission: "read"
+    rate_limit: "200/min"
+    cache_policy:
+      ttl: 14400
+      key_prefix: "daily_price"
+    tags: [prices, time-series]
+
+  get_trade_calendar:
+    description: "Get trading calendar dates between start and end date"
+    capability: "market-data"
+    timeout: 10
+    cost: 1
+    version: "1.0.0"
+    permission: "read"
+    cache_policy:
+      ttl: 604800
+      key_prefix: "trade_cal"
+
+  get_income_statement:
+    description: "Get income statement data for a stock over a date range"
+    capability: "financials"
+    timeout: 15
+    cost: 2
+    version: "1.0.0"
+    permission: "read"
+    cache_policy:
+      ttl: 86400
+      key_prefix: "income_stmt"
+    tags: [financials, fundamental]
+
+  get_balance_sheet:
+    description: "Get balance sheet data for a stock"
+    capability: "financials"
+    timeout: 15
+    cost: 2
+    version: "1.0.0"
+    permission: "read"
+    cache_policy:
+      ttl: 86400
+      key_prefix: "balance_sheet"
+    tags: [financials, fundamental]
+
+  get_cashflow:
+    description: "Get cash flow statement data for a stock"
+    capability: "financials"
+    timeout: 15
+    cost: 2
+    version: "1.0.0"
+    permission: "read"
+    cache_policy:
+      ttl: 86400
+      key_prefix: "cashflow"
+    tags: [financials, fundamental]
+
+  get_money_flow:
+    description: "Get capital flow data for a stock"
+    capability: "market-behavior"
+    timeout: 10
+    cost: 1
+    version: "1.0.0"
+    permission: "read"
+    rate_limit: "200/min"
+    cache_policy:
+      ttl: 14400
+      key_prefix: "money_flow"
+    tags: [capital-flow, technical]
+
+  get_holder_change:
+    description: "Get major holder changes for a stock"
+    capability: "market-behavior"
+    timeout: 15
+    cost: 2
+    version: "1.0.0"
+    permission: "read"
+    cache_policy:
+      ttl: 86400
+      key_prefix: "holder_change"
+    tags: [holders, fundamental]
+
+  get_market_index:
+    description: "Get market index OHLCV data"
+    capability: "market-data"
+    timeout: 10
+    cost: 1
+    version: "1.0.0"
+    permission: "read"
+    cache_policy:
+      ttl: 3600
+      key_prefix: "market_index"
+    tags: [market, benchmark]

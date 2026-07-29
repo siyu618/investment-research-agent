@@ -323,58 +323,104 @@ class Scheduler:
         context: ExecutionContext,
         skill_executor: Optional[Callable],
     ) -> Any:
-        """Invoke the skill for this node.
+        """Invoke the skill for this node using the SkillLifecycle.
 
         Resolution order:
         1. Explicit skill_executor callable
-        2. Skill registry lookup
+        2. Skill registry lookup → load via SkillLifecycle
         3. Fallback: treat node.skill as module path
+
+        Lifecycle called: plan() → execute() → verify()
         """
         if skill_executor is not None:
             return await skill_executor(node, input_data, context)
 
-        if self.skill_registry is not None:
-            # Look up the skill in the registry
-            skill_meta = self.skill_registry.get_skill(node.skill)
-            if skill_meta is None:
-                raise FatalError(
-                    f"Skill '{node.skill}' not found in registry. "
-                    f"Available: {self.skill_registry.list_skills()}"
-                )
-            # The registry entry has a 'module' field pointing to the implementation
-            module_path = skill_meta.get("module", "")
-            if not module_path:
-                raise FatalError(
-                    f"Skill '{node.skill}' has no 'module' field in registry"
-                )
-            # Dynamic import and call
-            skill_instance = self._load_skill(module_path)
-            return await skill_instance.analyze(input_data)  # legacy interface
-
-        raise FatalError(
-            f"Cannot execute node '{node.id}': no skill_executor "
-            f"provided and no skill_registry configured"
-        )
-
-    @staticmethod
-    def _load_skill(module_path: str) -> Any:
-        """Dynamically load a skill instance from a module path.
-
-        Supports paths like: "strategies.fundamental-analysis.FundamentalSkill"
-        """
-        import importlib
-        parts = module_path.split(".")
-        module_name = ".".join(parts[:-1])
-        class_name = parts[-1]
-
-        try:
-            module = importlib.import_module(module_name)
-            cls = getattr(module, class_name)
-            return cls()
-        except (ImportError, AttributeError) as e:
+        skill = await self._load_skill_instance(node.skill)
+        if skill is None:
             raise FatalError(
-                f"Cannot load skill from '{module_path}': {e}"
+                f"Cannot execute node '{node.id}': "
+                f"no skill_executor provided and skill '{node.skill}' "
+                f"could not be loaded"
             )
+
+        from skills.base.skill_sdk import SkillLifecycle, ensure_skill_lifecycle
+        skill_lifecycle = ensure_skill_lifecycle(skill)
+
+        # Emit lifecycle events
+        self._emit(EventType.SKILL_STARTED, {
+            "skill_name": node.skill,
+            "node_id": node.id,
+        })
+
+        # Phase 1: Plan
+        plan = await skill_lifecycle.plan(input_data)
+
+        # Phase 2: Execute
+        output = await skill_lifecycle.execute(input_data, plan)
+
+        # Phase 3: Verify
+        if await self._config_should_verify():
+            verdict = await skill_lifecycle.verify(input_data, output)
+            self._emit(EventType.SKILL_VERIFYING, {
+                "skill_name": node.skill,
+                "passed": verdict.passed,
+                "checks": len(verdict.checks),
+            })
+
+        self._emit(EventType.SKILL_COMPLETED, {
+            "skill_name": node.skill,
+            "node_id": node.id,
+        })
+
+        return output
+
+    async def _load_skill_instance(self, skill_name: str) -> Any:
+        """Load a skill instance from the registry or module path.
+
+        Returns the skill instance, or None if unresolvable.
+        """
+        if self.skill_registry is None:
+            return None
+
+        skill_meta = self.skill_registry.get_skill(skill_name)
+        if skill_meta is None:
+            return None
+
+        # Check for explicit module path
+        module_path = skill_meta.get("module", "")
+        if module_path:
+            # Check for class reference (last part = class name)
+            parts = module_path.split(".")
+            try:
+                # Try as a module path ending with class name
+                import importlib
+                if len(parts) > 1 and parts[-1][0].isupper():
+                    module_name = ".".join(parts[:-1])
+                    class_name = parts[-1]
+                    module = importlib.import_module(module_name)
+                    cls = getattr(module, class_name)
+                    return cls()
+                else:
+                    # Module path points to a module; look for a default skill
+                    module = importlib.import_module(module_path)
+                    # Try common naming conventions
+                    for candidate in (skill_name.replace("-", "_"), "Skill", "DefaultSkill"):
+                        if hasattr(module, candidate):
+                            return getattr(module, candidate)()
+            except (ImportError, AttributeError, TypeError) as e:
+                raise FatalError(
+                    f"Cannot load skill '{skill_name}' from module "
+                    f"'{module_path}': {e}"
+                )
+
+        return None
+
+    async def _config_should_verify(self) -> bool:
+        """Check if skill self-verification is enabled.
+
+        Controlled by config; can be overridden per-skill in the future.
+        """
+        return True
 
     # ─── Input/Output Mapping ────────────────────────────────────────────
 
