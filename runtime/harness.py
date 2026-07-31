@@ -119,6 +119,14 @@ class Harness:
                 "passed": verification.passed,
             })
 
+            # Verification gate: block report generation on failures
+            # per the policy mode (future data / bad weights / no evidence).
+            if not verification.passed:
+                raise FatalError(
+                    "Verification failed: "
+                    + "; ".join(getattr(verification, "errors", [])[:3])
+                )
+
             # Step 4: Report
             report = await self._run_step(
                 "report",
