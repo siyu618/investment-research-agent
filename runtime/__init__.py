@@ -32,7 +32,9 @@ from .models import (
     TaskNode,
     WorkflowDefinition,
 )
+from .run_recorder import RunRecorder
 from .scheduler import Scheduler
+from .snapshot import DataSnapshot, hash_of
 from .workflow import (
     WorkflowLoadError,
     WorkflowRegistry,
@@ -57,6 +59,8 @@ __all__ = [
     "SkillError", "ToolError",
     # Cache
     "CacheProvider", "CachePolicy", "TTLCache",
+    # Snapshot / Run
+    "DataSnapshot", "hash_of", "RunRecorder",
     # Workflow
     "WorkflowDefinition", "WorkflowRegistry",
     "WorkflowLoadError", "load_workflow_from_dict", "load_workflow_from_yaml",

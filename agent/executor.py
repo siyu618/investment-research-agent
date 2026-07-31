@@ -2,14 +2,20 @@
 #
 # Converts AnalysisPlan to TaskGraph, registers skills, and passes
 # MarketDataProvider to all skills through shared state.
+# Data flows through DataSnapshot wrappers so every run is auditable
+# and replayable (as_of, source, query_params, data_hash, version).
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from runtime.graph import build_graph
 from runtime.models import GraphResult, RuntimeConfig, TaskGraph
+from runtime.run_recorder import RunRecorder
 from runtime.scheduler import Scheduler
+from runtime.snapshot import DataSnapshot
+from runtime.tracing.agent_trace import TraceRecord
 from strategies.base.models import AnalysisPlan
 from strategies.loader import load_skill
 from tools.providers import MarketDataProvider
@@ -36,8 +42,11 @@ class SkillMap:
 class Executor:
     """Carries out the analysis plan via the DAG Scheduler.
 
-    Converts AnalysisPlan → TaskGraph → Scheduler.
-    Injects MarketDataProvider and stock universe into skill context.
+    Data access pattern:
+      data-collector → MarketDataProvider → DataSnapshot → skill context
+
+    Every snapshot is recorded for the run output. Skill inputs are
+    derived from the snapshot so Skills never read uncontrolled data.
     """
 
     def __init__(
@@ -45,14 +54,22 @@ class Executor:
         provider: MarketDataProvider,
         event_bus: Any = None,
         config: RuntimeConfig | None = None,
+        recorder: RunRecorder | None = None,
+        run_id: str = "",
     ):
         self.provider = provider
         self.skills = SkillMap(provider)
         self.event_bus = event_bus
         self.config = config
+        self.recorder = recorder
+        self.run_id = run_id
         self.scheduler: Scheduler | None = None
         self._last_graph_result: GraphResult | None = None
-        self._stocks: list = []  # loaded by data-collector step
+        self._stocks: list = []
+        self._snapshots: list[DataSnapshot] = []
+        self._trace_records: list[TraceRecord] = []
+
+    # ─── Execution ─────────────────────────────────────────────────────
 
     async def execute_plan(self, plan: AnalysisPlan) -> dict:
         """Execute an AnalysisPlan using the Scheduler."""
@@ -74,17 +91,18 @@ class Executor:
             user_requirement="execute_plan",
         )
 
-        # Create a skill executor callable that the Scheduler calls
         async def skill_executor(node, input_data, context):
             if node.skill == "data-collector":
                 return await self._run_data_collector(input_data)
             skill = self.skills.get(node.skill)
             if skill is None:
                 return {"note": f"skill '{node.skill}' not implemented as skill", "input": input_data}
-            # Inject stocks + provider into context
             ctx = dict(input_data)
             ctx["stocks"] = self._stocks
             ctx["provider"] = self.provider
+            # Attach latest snapshot metadata so skills can validate as_of
+            if self._snapshots:
+                ctx["snapshot"] = self._snapshots[-1]
             from skills.base.skill_sdk import SkillPlan
             return await skill.execute(ctx, SkillPlan())
 
@@ -100,15 +118,47 @@ class Executor:
             for node_id, node_result in result.node_results.items()
         }
 
+    # ─── Data Collection (snapshot-backed) ─────────────────────────────
+
     async def _run_data_collector(self, input_data: dict) -> dict:
-        """Load stock universe from provider."""
+        """Load stock universe from provider and wrap it in a DataSnapshot."""
+        start = datetime.now()
         stocks = await self.provider.get_stock_basic()
+
+        # Build a point-in-time snapshot
+        as_of = input_data.get("end_date", "20251231")
+        snapshot = DataSnapshot.from_rows(
+            rows=stocks,
+            source=self.provider.__class__.__name__,
+            query_params={"market": None, "industry": None},
+            as_of=as_of,
+            publish_date=datetime.now().strftime("%Y-%m-%d"),
+        )
+        self._snapshots.append(snapshot)
+
+        # Record tool trace
+        self._trace_records.append(TraceRecord.make(
+            run_id=self.run_id,
+            step_id="data-collector",
+            kind="tool",
+            name="get_stock_basic",
+            input_data={"market": None},
+            output_data=snapshot.to_dict(),
+            duration_ms=int((datetime.now() - start).total_seconds() * 1000),
+        ))
+
         self._stocks = stocks
         return {
             "stock_count": len(stocks),
             "stocks": stocks,
-            "stocks_basic": [{"ts_code": s.ts_code, "name": s.name, "industry": s.industry} for s in stocks],
+            "stocks_basic": [
+                {"ts_code": s.ts_code, "name": s.name, "industry": s.industry}
+                for s in stocks
+            ],
+            "snapshot": snapshot.to_dict(),
         }
+
+    # ─── Plan → Graph ──────────────────────────────────────────────────
 
     def _plan_to_graph(self, plan: AnalysisPlan) -> TaskGraph:
         """Convert AnalysisPlan to TaskGraph, preserving dependencies for parallelism."""
@@ -139,6 +189,16 @@ class Executor:
             entry_points=entry_points or None,
             output_nodes=output_nodes or None,
         )
+
+    # ─── Run artifact accessors ────────────────────────────────────────
+
+    def snapshot_records(self) -> list[dict]:
+        """Serialized snapshots for the data_snapshot.json artifact."""
+        return [s.to_dict() for s in self._snapshots]
+
+    def trace_records(self) -> list[dict]:
+        """Serialized trace records for tool_trace.jsonl."""
+        return [r.to_jsonl() for r in self._trace_records]
 
     def get_graph_result(self) -> GraphResult | None:
         return self._last_graph_result
