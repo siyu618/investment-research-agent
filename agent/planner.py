@@ -45,6 +45,7 @@ class InvestmentRequest:
     natural language requirement using a simple rule-based parser.
     """
     stock_pool: str = "csi300"           # Stock universe identifier
+    stock_codes: list[str] = field(default_factory=list)  # explicit ts_codes (e.g. 600519.SH)
     objective: InvestmentObjective = InvestmentObjective.MIXED
     risk_level: RiskLevel = RiskLevel.MEDIUM
     holding_period: HoldingPeriod = HoldingPeriod.MEDIUM
@@ -143,11 +144,18 @@ class Planner:
         if "中等风险" in req_orig:
             risk_level = RiskLevel.MEDIUM
 
+        # --- Explicit stock codes (e.g. "分析 600519.SH") ---
+        stock_codes = re.findall(r"\b(\d{6}\.(SH|SZ|BJ))\b", req_orig, re.IGNORECASE)
+        stock_codes = [f"{code}.{suffix.upper()}" for code, suffix in stock_codes]
+        if stock_codes:
+            stock_pool = "single"  # override universe
+
         # --- Strategy weights ---
         strategy_weights = self._default_weights(objective, risk_level)
 
         return InvestmentRequest(
             stock_pool=stock_pool,
+            stock_codes=stock_codes,
             objective=objective,
             risk_level=risk_level,
             holding_period=period,
@@ -172,6 +180,7 @@ class Planner:
                          depends_on=[],
                          params={"start_date": req.data_start_date,
                                  "end_date": req.data_end_date,
+                                 "stock_codes": req.stock_codes,
                                  "timeout": 60}),
             AnalysisStep(id=2, skill="fundamental-analysis",
                          target=req.stock_pool,

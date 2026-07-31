@@ -73,7 +73,7 @@ class TraceRecord:
         retry_count: int = 0,
         error: str = "",
         token_usage: dict | None = None,
-    ) -> "TraceRecord":
+    ) -> TraceRecord:
         """Build a TraceRecord with computed hashes and summaries."""
         input_summary = ""
         input_hash = ""

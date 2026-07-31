@@ -121,16 +121,25 @@ class Executor:
     # ─── Data Collection (snapshot-backed) ─────────────────────────────
 
     async def _run_data_collector(self, input_data: dict) -> dict:
-        """Load stock universe from provider and wrap it in a DataSnapshot."""
+        """Load stock universe from provider and wrap it in a DataSnapshot.
+
+        Honors explicit ts_code requests (single-stock analysis) by
+        filtering the provider's universe to the requested codes.
+        """
         start = datetime.now()
         stocks = await self.provider.get_stock_basic()
+
+        requested = input_data.get("stock_codes") or []
+        if requested:
+            requested_set = set(requested)
+            stocks = [s for s in stocks if s.ts_code in requested_set]
 
         # Build a point-in-time snapshot
         as_of = input_data.get("end_date", "20251231")
         snapshot = DataSnapshot.from_rows(
             rows=stocks,
             source=self.provider.__class__.__name__,
-            query_params={"market": None, "industry": None},
+            query_params={"stock_codes": requested or None},
             as_of=as_of,
             publish_date=datetime.now().strftime("%Y-%m-%d"),
         )
@@ -142,7 +151,7 @@ class Executor:
             step_id="data-collector",
             kind="tool",
             name="get_stock_basic",
-            input_data={"market": None},
+            input_data={"stock_codes": requested or None},
             output_data=snapshot.to_dict(),
             duration_ms=int((datetime.now() - start).total_seconds() * 1000),
         ))

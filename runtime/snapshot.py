@@ -73,7 +73,7 @@ class DataSnapshot:
         as_of: str | None = None,
         publish_date: str = "",
         trade_date: str = "",
-    ) -> "DataSnapshot":
+    ) -> DataSnapshot:
         """Build a snapshot from dataclass rows (StockBasic/DailyPrice/etc).
 
         Converts dataclasses to dicts via dataclasses.asdict.

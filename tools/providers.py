@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
@@ -294,31 +295,213 @@ class MockMarketDataProvider(MarketDataProvider):
         ]
 
 
-# ─── Provider Extension Points ─────────────────────────────────────────────
+# ─── Tushare Provider ───────────────────────────────────────────────────
+
+
+class TushareClientError(Exception):
+    """Raised when Tushare API returns an error."""
 
 
 class OfficialTushareMCPProvider(MarketDataProvider):
-    """Production Tushare provider via MCP.
+    """Real Tushare data provider.
 
-    Extension point: implement when Tushare token is available.
+    Uses the `tushare` package (pro_api). Requires TUSHARE_TOKEN.
+    Fetches stock basics, daily prices, and financial statements,
+    mapping them to the unified MarketDataProvider schema.
+
+    Usage:
+        provider = OfficialTushareMCPProvider(token="...")
+        stocks = await provider.get_stock_basic(market="SSE")
     """
-    async def get_stock_basic(self, market=None, industry=None):
-        raise NotImplementedError("OfficialTushareMCPProvider: call tushare.pro_api().stock_basic()")
 
-    async def get_daily_price(self, ts_code, start_date, end_date):
-        raise NotImplementedError("OfficialTushareMCPProvider: call tushare.pro_api().daily()")
+    def __init__(self, token: str = "", max_retries: int = 3):
+        self._token = token or os.environ.get("TUSHARE_TOKEN", "")
+        self._max_retries = max_retries
+        self._pro = None
+        if self._token:
+            try:
+                import tushare as ts
+                ts.set_token(self._token)
+                self._pro = ts.pro_api()
+            except Exception as e:
+                raise TushareClientError(f"Failed to init Tushare: {e}") from e
 
-    async def get_income_statement(self, ts_code, start_date, end_date):
-        raise NotImplementedError
+    def _ensure_pro(self):
+        if self._pro is None:
+            raise TushareClientError(
+                "TUSHARE_TOKEN not configured. Set TUSHARE_TOKEN env var "
+                "or pass token= to the provider."
+            )
+        return self._pro
 
-    async def get_balance_sheet(self, ts_code, start_date, end_date):
-        raise NotImplementedError
+    async def _call(self, fn, **kwargs):
+        """Call a tushare API with retries on transient errors."""
+        import asyncio
 
-    async def get_cashflow(self, ts_code, start_date, end_date):
-        raise NotImplementedError
+        last_err: Exception | None = None
+        for attempt in range(self._max_retries):
+            try:
+                # tushare API is sync; run in thread pool
+                return await asyncio.to_thread(fn, **kwargs)
+            except Exception as e:
+                last_err = e
+                if attempt < self._max_retries - 1:
+                    await asyncio.sleep(0.5 * (attempt + 1))
+        raise TushareClientError(f"Tushare call failed: {last_err}") from last_err
 
-    async def get_financial_summary(self, ts_code, start_date, end_date):
-        raise NotImplementedError
+    async def get_stock_basic(
+        self, market: str | None = None, industry: str | None = None
+    ) -> list[StockBasic]:
+        pro = self._ensure_pro()
+        df = await self._call(pro.stock_basic, exchange="", list_status="L",
+                              fields="ts_code,name,industry,area,market,list_date")
+        results = []
+        for _, row in df.iterrows():
+            if market and row["market"] not in market:
+                continue
+            if industry and row["industry"] != industry:
+                continue
+            results.append(StockBasic(
+                ts_code=row["ts_code"],
+                name=row["name"],
+                industry=row.get("industry", "") or "",
+                market=row.get("market", "") or "",
+                list_date=row.get("list_date", "") or "",
+                is_active=True,
+            ))
+        return results
+
+    async def get_daily_price(
+        self, ts_code: str, start_date: str, end_date: str
+    ) -> list[DailyPrice]:
+        pro = self._ensure_pro()
+        df = await self._call(
+            pro.daily, ts_code=ts_code, start_date=start_date, end_date=end_date,
+        )
+        results = []
+        for _, row in df.iterrows():
+            results.append(DailyPrice(
+                ts_code=ts_code,
+                trade_date=str(row["trade_date"]),
+                open=float(row.get("open", 0) or 0),
+                high=float(row.get("high", 0) or 0),
+                low=float(row.get("low", 0) or 0),
+                close=float(row.get("close", 0) or 0),
+                volume=int(row.get("vol", 0) or 0),
+                amount=float(row.get("amount", 0) or 0),
+                change_pct=float(row.get("pct_chg", 0) or 0),
+            ))
+        return results
+
+    async def get_income_statement(
+        self, ts_code: str, start_date: str, end_date: str
+    ) -> list[FinancialStatement]:
+        pro = self._ensure_pro()
+        df = await self._call(
+            pro.income, ts_code=ts_code, start_date=start_date, end_date=end_date,
+            fields="ts_code,end_date,report_type,revenue,n_income,operate_profit",
+        )
+        return self._map_income(df)
+
+    async def get_balance_sheet(
+        self, ts_code: str, start_date: str, end_date: str
+    ) -> list[FinancialStatement]:
+        pro = self._ensure_pro()
+        df = await self._call(
+            pro.balancesheet, ts_code=ts_code, start_date=start_date, end_date=end_date,
+            fields="ts_code,end_date,report_type,total_assets,total_liab,total_hldr_eqy_exc_min_int",
+        )
+        results = []
+        for _, row in df.iterrows():
+            assets = float(row.get("total_assets", 0) or 0)
+            liab = float(row.get("total_liab", 0) or 0)
+            equity = float(row.get("total_hldr_eqy_exc_min_int", 0) or 0)
+            results.append(FinancialStatement(
+                ts_code=ts_code,
+                end_date=str(row["end_date"]),
+                report_type=_report_type(str(row.get("report_type", "1"))),
+                total_assets=assets,
+                total_liabilities=liab,
+                equity=equity,
+            ))
+        return results
+
+    async def get_cashflow(
+        self, ts_code: str, start_date: str, end_date: str
+    ) -> list[FinancialStatement]:
+        pro = self._ensure_pro()
+        df = await self._call(
+            pro.cashflow, ts_code=ts_code, start_date=start_date, end_date=end_date,
+            fields="ts_code,end_date,report_type,n_cashflow_act",
+        )
+        results = []
+        for _, row in df.iterrows():
+            results.append(FinancialStatement(
+                ts_code=ts_code,
+                end_date=str(row["end_date"]),
+                report_type=_report_type(str(row.get("report_type", "1"))),
+                operating_cash_flow=float(row.get("n_cashflow_act", 0) or 0),
+            ))
+        return results
+
+    async def get_financial_summary(
+        self, ts_code: str, start_date: str, end_date: str
+    ) -> list[FinancialStatement]:
+        """Merge income + balance + cashflow into unified statements."""
+        income = await self.get_income_statement(ts_code, start_date, end_date)
+        balance = await self.get_balance_sheet(ts_code, start_date, end_date)
+        cashflow = await self.get_cashflow(ts_code, start_date, end_date)
+
+        by_period: dict[str, FinancialStatement] = {}
+        for stmt in income + balance + cashflow:
+            key = stmt.end_date
+            if key not in by_period:
+                by_period[key] = stmt
+            else:
+                target = by_period[key]
+                for field_name in ("revenue", "net_profit", "operating_profit",
+                                   "total_assets", "total_liabilities", "equity",
+                                   "operating_cash_flow"):
+                    src = getattr(stmt, field_name)
+                    if src is not None and getattr(target, field_name) is None:
+                        setattr(target, field_name, src)
+
+        # Compute derived metrics
+        for stmt in by_period.values():
+            if stmt.equity and stmt.equity > 0 and stmt.net_profit is not None:
+                stmt.roe = stmt.net_profit / stmt.equity
+            if stmt.bvps is None and stmt.equity and stmt.net_profit:
+                stmt.bvps = stmt.equity / (stmt.net_profit / (stmt.basic_eps or 1) if stmt.basic_eps else 1)
+
+        return list(by_period.values())
+
+    def _map_income(self, df) -> list[FinancialStatement]:
+        results = []
+        for _, row in df.iterrows():
+            results.append(FinancialStatement(
+                ts_code=str(row["ts_code"]),
+                end_date=str(row["end_date"]),
+                report_type=_report_type(str(row.get("report_type", "1"))),
+                revenue=float(row.get("revenue", 0) or 0),
+                net_profit=float(row.get("n_income", 0) or 0),
+                operating_profit=float(row.get("operate_profit", 0) or 0),
+            ))
+        return results
+
+
+def _report_type(rt: str) -> str:
+    """Map Tushare report_type codes to unified names."""
+    mapping = {
+        "1": "annual",
+        "2": "q1",
+        "3": "q2",
+        "4": "q3",
+        "5": "annual",
+    }
+    return mapping.get(rt, "annual")
+
+
+# ─── Provider Extension Points ─────────────────────────────────────────────
 
 
 class CachedMarketDataProvider(MarketDataProvider):
