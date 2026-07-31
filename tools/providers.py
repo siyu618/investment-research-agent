@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -137,6 +138,34 @@ class MarketDataProvider(ABC):
 # ─── Mock Provider ────────────────────────────────────────────────────────
 
 
+# Company archetypes for realistic mock data coverage:
+#   growth  — high revenue/profit growth, lower margins, higher leverage
+#   value   — stable growth, moderate margins, low leverage
+#   cyclical— volatile revenue/profit (boom/bust), mid leverage
+#   abnormal— negative profit / cashflow stress (edge-case testing)
+_ARCHETYPE = {
+    "growth": {"rev_growth": 0.25, "profit_growth": 0.30, "margin": 0.30,
+               "debt": 0.55, "ocf_ratio": 0.8},
+    "value": {"rev_growth": 0.06, "profit_growth": 0.07, "margin": 0.40,
+              "debt": 0.30, "ocf_ratio": 1.1},
+    "cyclical": {"rev_growth": 0.12, "profit_growth": 0.05, "margin": 0.25,
+                 "debt": 0.50, "ocf_ratio": 0.9},
+    "abnormal": {"rev_growth": -0.05, "profit_growth": -0.20, "margin": 0.10,
+                 "debt": 0.75, "ocf_ratio": 0.2},
+}
+
+# Assign an archetype per stock (stable across processes).
+_ARCHETYPE_BY_CODE = {
+    "000001.SZ": "value", "000002.SZ": "cyclical", "000333.SZ": "growth",
+    "000651.SZ": "value", "000858.SZ": "growth", "002415.SZ": "growth",
+    "002475.SZ": "growth", "300750.SZ": "growth", "600036.SH": "value",
+    "600519.SH": "growth", "600887.SH": "value", "600900.SH": "value",
+    "601318.SH": "value", "601398.SH": "value", "603259.SH": "growth",
+    # Edge-case: abnormal company (negative/stressed fundamentals)
+    "000007.SZ": "abnormal", "000009.SZ": "cyclical",
+}
+
+# Add a few abnormal/cyclical stocks for edge-case coverage.
 _STOCK_UNIVERSE: dict[str, dict] = {
     "000001.SZ": {"name": "平安银行", "industry": "银行"},
     "000002.SZ": {"name": "万科A", "industry": "房地产"},
@@ -153,27 +182,73 @@ _STOCK_UNIVERSE: dict[str, dict] = {
     "601318.SH": {"name": "中国平安", "industry": "保险"},
     "601398.SH": {"name": "工商银行", "industry": "银行"},
     "603259.SH": {"name": "药明康德", "industry": "医药生物"},
+    # Edge-case coverage
+    "000007.SZ": {"name": "全新好", "industry": "房地产"},
+    "000009.SZ": {"name": "中国宝安", "industry": "综合"},
 }
 
 
+def _stable_seed(ts_code: str, salt: str = "") -> int:
+    """Deterministic 32-bit seed from a stock code (cross-process stable)."""
+    h = hashlib.sha256(f"{ts_code}:{salt}".encode()).hexdigest()
+    return int(h[:8], 16)
+
+
+def _stable_float(ts_code: str, salt: str, lo: float, hi: float) -> float:
+    """Deterministic float in [lo, hi) from ts_code+salt."""
+    seed = _stable_seed(ts_code, salt)
+    return lo + (seed % 10000) / 10000 * (hi - lo)
+
+
+# Real trading calendar (weekdays, skipping weekends) — no string concat.
+# Deterministic across processes (pure datetime arithmetic, no pandas needed).
+def _build_trading_dates() -> list[str]:
+    from datetime import date as _date
+    from datetime import timedelta as _td
+
+    _d = _date(2024, 1, 2)
+    _end = _date(2025, 12, 31)
+    _dates: list[str] = []
+    while _d <= _end:
+        if _d.weekday() < 5:  # Mon-Fri
+            _dates.append(_d.strftime("%Y%m%d"))
+        _d += _td(days=1)
+    return _dates
+
+
+_TRADING_DATES = _build_trading_dates()
+
+
 def _make_financials(ts_code: str, years: int = 3) -> list[FinancialStatement]:
-    """Generate deterministic mock financial data for a stock."""
-    # Use hash of ts_code for deterministic pseudo-random values
-    h = hash(ts_code) & 0xFFFFFFFF
-    np_base = 50_000_000 + (h % 200_000_000)
-    rev_base = 500_000_000 + (h % 2_000_000_000)
+    """Generate deterministic mock financial data by company archetype."""
+    archetype = _ARCHETYPE.get(_ARCHETYPE_BY_CODE.get(ts_code, "value"),
+                               _ARCHETYPE["value"])
+
+    rev_base = _stable_float(ts_code, "rev", 3e8, 8e8)
+    np_base = rev_base * _stable_float(ts_code, "npm", 0.05, 0.15)
+    margin = archetype["margin"] + _stable_float(ts_code, "margin_jit", -0.03, 0.03)
+    debt = archetype["debt"] + _stable_float(ts_code, "debt_jit", -0.05, 0.05)
 
     results = []
     for i in range(years):
         year = 2024 - i
-        # Each year revenue and profit grow/shrink deterministically
-        rev = rev_base * (1.0 + (h % 10 - 5) / 100)  # +/-5% variation
-        np = np_base * (1.0 + (h % 10 - 5) / 100)
-        assets = rev * (2.0 + (h % 100) / 100)
-        liab = assets * (0.4 + (h % 30) / 100)
+        # Compound growth/decline by archetype (deterministic per year)
+        g_rev = archetype["rev_growth"] + _stable_float(ts_code, f"rev_jit{i}", -0.03, 0.03)
+        g_np = archetype["profit_growth"] + _stable_float(ts_code, f"np_jit{i}", -0.04, 0.04)
+
+        rev = rev_base * (1 + g_rev) ** (years - 1 - i)
+        np = np_base * (1 + g_np) ** (years - 1 - i)
+
+        # Cyclical: alternate boom/bust around base
+        if archetype is _ARCHETYPE["cyclical"]:
+            cycle = 1 + 0.3 * ((-1) ** i)  # +30% / -30% alternate
+            rev = rev * (1 + 0.2 * cycle)
+            np = np * (1 + 0.5 * cycle)
+
+        assets = rev * (2.0 + _stable_float(ts_code, f"assets{i}", 0, 1))
+        liab = assets * max(0.05, min(0.95, debt))
         equity = assets - liab
-        ocf = np * (0.7 + (h % 50) / 100)
-        gross_margin = 0.25 + (h % 50) / 100
+        ocf = np * archetype["ocf_ratio"]
         eps = np / 5_000_000
         bvps_val = equity / 5_000_000
 
@@ -195,32 +270,27 @@ def _make_financials(ts_code: str, years: int = 3) -> list[FinancialStatement]:
                 free_cash_flow=ocf * 0.8,
                 basic_eps=eps,
                 bvps=bvps_val,
-                gross_margin=gross_margin,
+                gross_margin=margin,
                 roe=np / equity if equity else 0.0,
             ))
     return results
 
 
 def _make_prices(ts_code: str) -> list[DailyPrice]:
-    """Generate deterministic mock daily price data (2 years)."""
-    h = hash(ts_code) & 0xFFFFFFFF
-    base_price = 20.0 + (h % 100)  # 20-120
+    """Generate deterministic mock daily price data (real trading dates)."""
+    base_price = 20.0 + _stable_float(ts_code, "base_price", 0, 100)
     prices: list[DailyPrice] = []
-    # Random walk with drift, bounded volatility
-    for day in range(500):
-        year = 2024 if day < 365 else 2025
-        doy = (day % 365) + 101
-        date = f"{year}{doy:03d}"
-        # Daily change: -3% to +3.5%, small positive drift
-        change_pct = ((h + day * 7) % 65 - 30) / 1000  # -3% to +3.5%
-        if day > 0:
-            close = prices[-1].close * (1.0 + change_pct)
-        else:
-            close = base_price
-        open_p = close * (1.0 + ((h + day) % 21 - 10) / 1000)
+    close = base_price
+    dates = _TRADING_DATES  # real Mon-Fri calendar, cross-process stable
+
+    for day, date in enumerate(dates):
+        # Daily change: -3% to +3.5% (deterministic per ts_code+day)
+        change_pct = _stable_float(ts_code, f"chg{day}", -0.03, 0.035)
+        close = close * (1.0 + change_pct)
+        open_p = close * (1.0 + _stable_float(ts_code, f"open{day}", -0.01, 0.01))
         high = max(open_p, close) * 1.015
         low = min(open_p, close) * 0.985
-        volume = int(5_000_000 + (hash(f"{ts_code}-{day}") % 15_000_000))
+        volume = int(5_000_000 + _stable_float(ts_code, f"vol{day}", 0, 1) * 15_000_000)
         prices.append(DailyPrice(
             ts_code=ts_code,
             trade_date=date,

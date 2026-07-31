@@ -82,14 +82,15 @@ class DataSnapshot:
         return hashlib.sha256(payload.encode()).hexdigest()
 
     def _content_dict(self) -> dict[str, Any]:
-        """Metadata + data layers (used by both to_dict and data_hash)."""
+        """Content for hashing — EXCLUDES run-varying timestamps.
+
+        as_of/publish_date/effective_date change between runs; the content
+        hash must be stable so the same data replayable anywhere, any time.
+        """
         d: dict[str, Any] = {
-            "as_of": self.as_of,
             "source": self.source,
             "query_params": self.query_params,
             "version": self.version,
-            "publish_date": self.publish_date,
-            "effective_date": self.effective_date,
             "trade_date": self.trade_date,
             "stocks": self.stocks,
             "prices": self.prices,

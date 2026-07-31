@@ -39,8 +39,8 @@ class TestE2E:
         """Data collection step loads stocks."""
         executor = Executor(provider=provider, config=config)
         data = await executor._run_data_collector({})
-        assert data["stock_count"] == 15
-        assert len(data["stocks_basic"]) == 15
+        assert data["stock_count"] == 17  # 15 CSI300 + 2 edge-case stocks
+        assert len(data["stocks_basic"]) == 17
 
     async def test_full_pipeline(self, provider, config):
         """End-to-end: plan → execute → report."""
