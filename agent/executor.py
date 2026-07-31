@@ -68,11 +68,21 @@ class Executor:
         self._stocks: list = []
         self._snapshots: list[DataSnapshot] = []
         self._trace_records: list[TraceRecord] = []
+        self._requested_codes: list[str] = []
 
     # ─── Execution ─────────────────────────────────────────────────────
 
     async def execute_plan(self, plan: AnalysisPlan) -> dict:
-        """Execute an AnalysisPlan using the Scheduler."""
+        """Execute an AnalysisPlan using the Scheduler.
+
+        Extracts requested stock codes from the plan's data step so the
+        data-collector can filter the universe even when the Scheduler
+        passes an empty graph state (first node has no upstream input).
+        """
+        for step in plan.analysis_steps:
+            if step.skill == "data-collector":
+                self._requested_codes = list(step.params.get("stock_codes") or [])
+                break
         graph = self._plan_to_graph(plan)
         return await self._execute_graph(graph)
 
@@ -129,7 +139,7 @@ class Executor:
         start = datetime.now()
         stocks = await self.provider.get_stock_basic()
 
-        requested = input_data.get("stock_codes") or []
+        requested = list(input_data.get("stock_codes") or []) or self._requested_codes
         if requested:
             requested_set = set(requested)
             stocks = [s for s in stocks if s.ts_code in requested_set]
