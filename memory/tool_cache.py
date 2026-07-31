@@ -9,7 +9,7 @@ import json
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from memory.interfaces import MemoryEntry, MemoryProvider, MemoryStats, MemoryTier
 
@@ -48,7 +48,7 @@ class ToolCacheMemory(MemoryProvider):
     def tier(self) -> MemoryTier:
         return MemoryTier.TOOL_CACHE
 
-    async def store(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
+    async def store(self, key: str, value: Any, ttl: int | None = None) -> None:
         expires_at = None
         if ttl is not None:
             expires_at = (datetime.now() + timedelta(seconds=ttl)).isoformat()
@@ -60,7 +60,7 @@ class ToolCacheMemory(MemoryProvider):
                 (key, json.dumps(value), datetime.now().isoformat(), expires_at),
             )
 
-    async def retrieve(self, key: str) -> Optional[Any]:
+    async def retrieve(self, key: str) -> Any | None:
         with sqlite3.connect(self.db_path) as conn:
             row = conn.execute(
                 "SELECT value, expires_at FROM tool_cache WHERE key = ?",

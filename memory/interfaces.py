@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 
 class MemoryTier(str, Enum):
@@ -30,7 +30,7 @@ class MemoryEntry:
     value: Any
     tier: str
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
-    ttl: Optional[int] = None
+    ttl: int | None = None
     metadata: dict = field(default_factory=dict)
 
     @property
@@ -67,7 +67,7 @@ class MemoryProvider(ABC):
         ...
 
     @abstractmethod
-    async def store(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
+    async def store(self, key: str, value: Any, ttl: int | None = None) -> None:
         """Store a value under the given key.
 
         Args:
@@ -78,7 +78,7 @@ class MemoryProvider(ABC):
         ...
 
     @abstractmethod
-    async def retrieve(self, key: str) -> Optional[Any]:
+    async def retrieve(self, key: str) -> Any | None:
         """Retrieve a value by key.
 
         Returns None if the key doesn't exist or has expired.

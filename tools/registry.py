@@ -19,20 +19,19 @@
 from __future__ import annotations
 
 import asyncio
-import functools
 import hashlib
 import inspect
 import json
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Callable, Optional
+from typing import Any
 
-from runtime.errors import AgentError, RecoverableError, FatalError, ToolError
+from runtime.errors import FatalError, ToolError
 from runtime.models import Event, EventType
-
 
 # ─── Cache Policy ────────────────────────────────────────────────────────
 
@@ -105,10 +104,10 @@ class ToolMetadata:
     permission: str = ToolPermission.READ.value
 
     # Caching
-    cache_policy: Optional[CachePolicy] = None
+    cache_policy: CachePolicy | None = None
 
     # Rate limiting — "N/interval" e.g. "200/min", "1000/hour"
-    rate_limit: Optional[str] = None
+    rate_limit: str | None = None
 
     # Known error types (for LLM reasoning about tool errors)
     errors: list[str] = field(default_factory=list)
@@ -122,7 +121,7 @@ class ToolResult:
     """Result from invoking a tool."""
     success: bool
     data: Any = None
-    error: Optional[str] = None
+    error: str | None = None
     duration_ms: int = 0
     cached: bool = False
     tool_name: str = ""
@@ -226,9 +225,9 @@ class ToolRegistry:
 
         Returns the number of tools registered.
         """
-        import os
-        import yaml
         from pathlib import Path
+
+        import yaml
 
         count = 0
         for yaml_path in sorted(Path(tool_dir).glob("*.yaml")):
@@ -262,6 +261,7 @@ class ToolRegistry:
 
                 # Load implementation from module
                 module_path = meta_dict.get("module", "")
+                fn: Callable | None = None
                 if module_path:
                     fn = self._load_tool_impl(module_path)
                 else:
@@ -281,7 +281,7 @@ class ToolRegistry:
         """List all registered tools with metadata."""
         return list(self._metadata.values())
 
-    def get_tool(self, name: str) -> Optional[ToolMetadata]:
+    def get_tool(self, name: str) -> ToolMetadata | None:
         """Get tool metadata by name."""
         return self._metadata.get(name)
 
@@ -406,7 +406,7 @@ class ToolRegistry:
                     asyncio.to_thread(fn, **args),
                     timeout=meta.timeout,
                 )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             duration = int((time.monotonic() - start) * 1000)
             self._emit(EventType.TOOL_FAILED, {
                 "tool_name": tool_name,
@@ -417,7 +417,7 @@ class ToolRegistry:
                 message=f"Tool '{tool_name}' timed out after {meta.timeout}s",
                 tool_name=tool_name,
                 recoverable=True,
-            )
+            ) from None
         except Exception as e:
             duration = int((time.monotonic() - start) * 1000)
             self._emit(EventType.TOOL_FAILED, {
@@ -429,7 +429,7 @@ class ToolRegistry:
                 message=f"Tool '{tool_name}' failed: {e}",
                 tool_name=tool_name,
                 recoverable=False,
-            )
+            ) from e
 
         # 6. Cache result
         duration = int((time.monotonic() - start) * 1000)

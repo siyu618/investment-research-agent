@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
 
-from skills.base.skill_sdk import SkillLifecycle, SkillMetadata, SkillOutput, SkillPlan, SkillVerdict
+from skills.base.skill_sdk import (
+    SkillLifecycle,
+    SkillMetadata,
+    SkillOutput,
+    SkillPlan,
+    SkillVerdict,
+)
 from tools.providers import MarketDataProvider, StockBasic
 
 
@@ -39,7 +44,7 @@ def _infer_pe_pb(stock: StockBasic) -> tuple[float, float]:
 class ValuationAnalysisSkill(SkillLifecycle):
     """Evaluates valuation reasonableness via PE/PB percentile vs universe."""
 
-    def __init__(self, provider: Optional[MarketDataProvider] = None):
+    def __init__(self, provider: MarketDataProvider | None = None):
         self._provider = provider
 
     def set_provider(self, provider: MarketDataProvider) -> None:

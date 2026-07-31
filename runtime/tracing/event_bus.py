@@ -6,13 +6,9 @@
 from __future__ import annotations
 
 import asyncio
-import fnmatch
-from collections import defaultdict
-from datetime import datetime
-from typing import AsyncIterator, Callable, Optional
+from collections.abc import AsyncIterator, Callable
 
 from runtime.models import Event
-
 
 EventCallback = Callable[[Event], None]
 

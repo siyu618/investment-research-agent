@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from memory.interfaces import MemoryEntry, MemoryProvider, MemoryStats, MemoryTier
 
@@ -35,7 +35,7 @@ class ArtifactMemory(MemoryProvider):
     def tier(self) -> MemoryTier:
         return MemoryTier.ARTIFACTS
 
-    async def store(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
+    async def store(self, key: str, value: Any, ttl: int | None = None) -> None:
         """Store an artifact.
 
         If value is a dict with 'content' and 'type' keys, stores
@@ -70,7 +70,7 @@ class ArtifactMemory(MemoryProvider):
             else:
                 filepath.write_text(json.dumps(value, indent=2, default=str))
 
-    async def retrieve(self, key: str) -> Optional[Any]:
+    async def retrieve(self, key: str) -> Any | None:
         """Retrieve an artifact by key.
 
         Returns an Artifact dict with content and metadata.
@@ -106,7 +106,7 @@ class ArtifactMemory(MemoryProvider):
         return None
 
     async def search(self, query: str, limit: int = 10) -> list[MemoryEntry]:
-        results = []
+        results: list[MemoryEntry] = []
         for filepath in sorted(self.directory.rglob("*")):
             if len(results) >= limit:
                 break

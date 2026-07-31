@@ -13,11 +13,15 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import logging
 import uuid
+from collections.abc import Callable
 from datetime import datetime
-from typing import Any, Callable, Optional
+from typing import Any
 
+from runtime.errors import FatalError, RecoverableError, TimeoutError
+from runtime.lifecycle import LifecycleHook
 from runtime.models import (
     AgentResult,
     Event,
@@ -25,8 +29,6 @@ from runtime.models import (
     ExecutionContext,
     RuntimeConfig,
 )
-from runtime.errors import AgentError, RecoverableError, FatalError, TimeoutError
-from runtime.lifecycle import LifecycleHook
 from runtime.tracing import EventBus
 
 logger = logging.getLogger("agent.harness")
@@ -48,8 +50,8 @@ class Harness:
 
     def __init__(
         self,
-        config: Optional[RuntimeConfig] = None,
-        event_bus: Optional[EventBus] = None,
+        config: RuntimeConfig | None = None,
+        event_bus: EventBus | None = None,
     ):
         self.config = config or RuntimeConfig()
         self.event_bus = event_bus or EventBus()
@@ -169,14 +171,14 @@ class Harness:
         Sub-steps (within Scheduler) have their own retry policies.
         This prevents double-retry amplification.
         """
-        last_error = None
+        last_error: Exception | None = None
         for attempt in range(1 + self.config.max_retries):
             try:
                 return await asyncio.wait_for(
                     step_fn(),
                     timeout=self.config.default_timeout,
                 )
-            except asyncio.TimeoutError:
+            except builtins.TimeoutError:
                 last_error = TimeoutError(
                     f"Step '{step_name}' timed out after {self.config.default_timeout}s",
                 )
@@ -187,7 +189,7 @@ class Harness:
                 if attempt < self.config.max_retries:
                     await self._fire_on_error(context, last_error, step_name)
                     continue
-                raise last_error
+                raise last_error from None
             except RecoverableError as e:
                 last_error = e
                 self._emit(EventType.ERROR_ENCOUNTERED, {
@@ -199,7 +201,9 @@ class Harness:
                     delay = e.retry_after or 1.0
                     await asyncio.sleep(delay)
                     continue
-                raise FatalError(f"Step '{step_name}' failed after {self.config.max_retries} retries")
+                raise FatalError(
+                    f"Step '{step_name}' failed after {self.config.max_retries} retries"
+                ) from e
             except FatalError:
                 raise
             except Exception as e:
@@ -208,7 +212,9 @@ class Harness:
                     "will_retry": False,
                 })
                 await self._fire_on_error(context, e, step_name)
-                raise FatalError(f"Step '{step_name}' failed with unexpected error: {e}")
+                raise FatalError(
+                    f"Step '{step_name}' failed with unexpected error: {e}"
+                ) from e
         raise FatalError(f"Step '{step_name}' failed after all retries")
 
     # ─── Hook Management ────────────────────────────────────────────────

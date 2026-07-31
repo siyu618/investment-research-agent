@@ -6,16 +6,14 @@
 
 from __future__ import annotations
 
-import json
-import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from memory.artifacts import ArtifactMemory
 from memory.episodic import EpisodicMemory
 from memory.execution import ExecutionMemory
-from memory.interfaces import MemoryEntry, MemoryProvider, MemoryStats, MemoryTier
+from memory.interfaces import MemoryEntry, MemoryProvider, MemoryStats
 from memory.research import ResearchMemory
 from memory.semantic import SemanticMemory
 from memory.tool_cache import ToolCacheMemory
@@ -76,12 +74,12 @@ class CompositeMemoryManager:
 
     # ─── Unified Store/Retrieve ─────────────────────────────────────────
 
-    async def store(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
+    async def store(self, key: str, value: Any, ttl: int | None = None) -> None:
         """Store in the appropriate tier based on key prefix."""
         tier, inner_key = self._resolve_tier(key)
         await tier.store(inner_key, value, ttl)
 
-    async def retrieve(self, key: str) -> Optional[Any]:
+    async def retrieve(self, key: str) -> Any | None:
         """Retrieve from the appropriate tier based on key prefix."""
         tier, inner_key = self._resolve_tier(key)
         return await tier.retrieve(inner_key)
@@ -134,10 +132,57 @@ class CompositeMemoryManager:
         """Clear working memory for a new session."""
         self.working._data.clear()
 
-    save_session = None  # set below
-    get_recent_sessions = None
-    save_recommendation = None
-    get_recommendations = None
+    async def save_session(self, session_id: str, requirement: str, plan: dict) -> None:
+        """Record a new analysis session in episodic memory."""
+        key = f"episodic:session:{session_id}"
+        await self.store(key, {
+            "session_id": session_id,
+            "requirement": requirement,
+            "plan": plan,
+            "created_at": datetime.now().isoformat(),
+            "status": "completed",
+        })
+
+    async def get_recent_sessions(self, limit: int = 5) -> list[dict]:
+        """Retrieve recent analysis sessions from episodic memory."""
+        results = await self.episodic.search("session:", limit)
+        sessions = []
+        for r in results:
+            val = r.value
+            if isinstance(val, dict):
+                sessions.append(val)
+        return sessions
+
+    async def save_recommendation(
+        self, stock_code: str, score: float, reasoning: str, strategy: str = "mixed",
+    ) -> None:
+        """Save an investment recommendation to semantic memory."""
+        date_str = datetime.now().strftime("%Y%m%d")
+        key = f"semantic:recommendation-{stock_code}-{date_str}"
+        stock_key = f"research:{stock_code}:{date_str}"
+        await self.store(key, {
+            "type": "recommendation",
+            "score": score,
+            "strategy": strategy,
+            "reasoning": reasoning,
+        })
+        await self.store(stock_key, {
+            "stock_code": stock_code,
+            "score": score,
+            "strategy": strategy,
+            "reasoning": reasoning,
+            "tags": [f"stock:{stock_code}", f"strategy:{strategy}"],
+        })
+
+    async def get_recommendations(self, limit: int = 5) -> list[dict]:
+        """List recent recommendations from semantic memory."""
+        results = await self.semantic.search("recommendation", limit)
+        recs = []
+        for r in results:
+            val = r.value
+            if isinstance(val, dict):
+                recs.append(val)
+        return recs
 
     # ─── Tier Resolution ────────────────────────────────────────────────
 
@@ -148,66 +193,6 @@ class CompositeMemoryManager:
                 return tier, key[len(prefix):]
         return self.working, key
 
-
-# ─── Attach legacy sync methods ──────────────────────────────────────────
-
-async def _save_session(self, session_id: str, requirement: str, plan: dict) -> None:
-    """Record a new analysis session in episodic memory."""
-    key = f"episodic:session:{session_id}"
-    await self.store(key, {
-        "session_id": session_id,
-        "requirement": requirement,
-        "plan": plan,
-        "created_at": datetime.now().isoformat(),
-        "status": "completed",
-    })
-
-async def _get_recent_sessions(self, limit: int = 5) -> list[dict]:
-    """Retrieve recent analysis sessions from episodic memory."""
-    results = await self.episodic.search("session:", limit)
-    sessions = []
-    for r in results:
-        val = r.value
-        if isinstance(val, dict):
-            sessions.append(val)
-    return sessions
-
-async def _save_recommendation(
-    self, stock_code: str, score: float, reasoning: str, strategy: str = "mixed",
-) -> None:
-    """Save an investment recommendation to semantic memory."""
-    date_str = datetime.now().strftime("%Y%m%d")
-    key = f"semantic:recommendation-{stock_code}-{date_str}"
-    stock_key = f"research:{stock_code}:{date_str}"
-    await self.store(key, {
-        "type": "recommendation",
-        "score": score,
-        "strategy": strategy,
-        "reasoning": reasoning,
-    })
-    await self.store(stock_key, {
-        "stock_code": stock_code,
-        "score": score,
-        "strategy": strategy,
-        "reasoning": reasoning,
-        "tags": [f"stock:{stock_code}", f"strategy:{strategy}"],
-    })
-
-async def _get_recommendations(self, limit: int = 5) -> list[dict]:
-    """List recent recommendations from semantic memory."""
-    results = await self.semantic.search("recommendation", limit)
-    recs = []
-    for r in results:
-        val = r.value
-        if isinstance(val, dict):
-            recs.append(val)
-    return recs
-
-# Attach async methods
-CompositeMemoryManager.save_session = _save_session
-CompositeMemoryManager.get_recent_sessions = _get_recent_sessions
-CompositeMemoryManager.save_recommendation = _save_recommendation
-CompositeMemoryManager.get_recommendations = _get_recommendations
 
 # Short alias
 MemoryManager = CompositeMemoryManager

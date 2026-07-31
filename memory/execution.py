@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from memory.interfaces import MemoryEntry, MemoryProvider, MemoryStats, MemoryTier
 
@@ -35,7 +35,7 @@ class ExecutionMemory(MemoryProvider):
     def tier(self) -> MemoryTier:
         return MemoryTier.EXECUTION
 
-    async def store(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
+    async def store(self, key: str, value: Any, ttl: int | None = None) -> None:
         """Save a checkpoint.
 
         Key format: "{session_id}/{node_id}" or free-form.
@@ -49,7 +49,7 @@ class ExecutionMemory(MemoryProvider):
         }
         filepath.write_text(json.dumps(entry, indent=2, default=str))
 
-    async def retrieve(self, key: str) -> Optional[Any]:
+    async def retrieve(self, key: str) -> Any | None:
         filepath = self._key_to_path(key)
         if not filepath.exists():
             return None
@@ -60,7 +60,7 @@ class ExecutionMemory(MemoryProvider):
             return None
 
     async def search(self, query: str, limit: int = 10) -> list[MemoryEntry]:
-        results = []
+        results: list[MemoryEntry] = []
         for filepath in sorted(self.directory.rglob("*.json")):
             if len(results) >= limit:
                 break
@@ -124,7 +124,7 @@ class ExecutionMemory(MemoryProvider):
 
     async def load_session_state(self, session_id: str) -> dict:
         """Load aggregate state for a session from all checkpoints."""
-        state = {}
+        state: dict = {}
         session_dir = self.directory / session_id
         if not session_dir.exists():
             return state

@@ -10,13 +10,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
 
 from runtime.graph import build_graph
 from runtime.models import TaskGraph, WorkflowDefinition
-
 
 # ─── Workflow YAML Format ──────────────────────────────────────────────
 
@@ -178,10 +175,11 @@ class WorkflowRegistry:
             except Exception as e:
                 import warnings
                 warnings.warn(
-                    f"Failed to load workflow '{filepath.name}': {e}"
+                    f"Failed to load workflow '{filepath.name}': {e}",
+                    stacklevel=2,
                 )
 
-    def get(self, name: str) -> Optional[WorkflowDefinition]:
+    def get(self, name: str) -> WorkflowDefinition | None:
         """Get a workflow by name."""
         return self._workflows.get(name)
 
@@ -198,7 +196,7 @@ class WorkflowRegistry:
     def count(self) -> int:
         return len(self._workflows)
 
-    def get_graph(self, name: str) -> Optional[TaskGraph]:
+    def get_graph(self, name: str) -> TaskGraph | None:
         """Get the TaskGraph for a workflow by name."""
         wf = self.get(name)
         return wf.graph if wf else None

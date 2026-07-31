@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Any, Optional
 
 from strategies.base.models import (
     AnalysisPlan,
@@ -85,7 +84,7 @@ class Verifier:
         messages = []
 
         # Try to find data dates from fundamental analysis provenance
-        for step_id, step_result in results.items():
+        for _, step_result in results.items():
             if hasattr(step_result, "profiles"):
                 for profile in step_result.profiles if step_result.profiles else []:
                     for metric in getattr(profile, "metrics", []):
@@ -109,7 +108,7 @@ class Verifier:
     def _check_lookahead(self, results: dict, analysis_date: datetime) -> dict:
         """Check that no data dates are after the analysis date."""
         messages = []
-        for step_id, step_result in results.items():
+        for _, step_result in results.items():
             if hasattr(step_result, "profiles"):
                 for profile in getattr(step_result, "profiles", []):
                     for metric in getattr(profile, "metrics", []):
@@ -144,7 +143,7 @@ class Verifier:
     def _check_missing_data(self, results: dict) -> dict:
         """Verify that missing data was flagged."""
         messages = []
-        for step_id, step_result in results.items():
+        for _, step_result in results.items():
             if hasattr(step_result, "profiles"):
                 for profile in getattr(step_result, "profiles", []):
                     flags = getattr(profile, "missing_data_flags", [])
@@ -162,7 +161,7 @@ class Verifier:
     def _check_evidence(self, results: dict) -> dict:
         """Verify that scores are backed by evidence (metrics)."""
         messages = []
-        for step_id, step_result in results.items():
+        for _, step_result in results.items():
             if hasattr(step_result, "profiles"):
                 for profile in getattr(step_result, "profiles", []):
                     metrics = getattr(profile, "metrics", [])

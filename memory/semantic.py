@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from memory.interfaces import MemoryEntry, MemoryProvider, MemoryStats, MemoryTier
 
@@ -45,7 +45,7 @@ class SemanticMemory(MemoryProvider):
     def tier(self) -> MemoryTier:
         return MemoryTier.SEMANTIC
 
-    async def store(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
+    async def store(self, key: str, value: Any, ttl: int | None = None) -> None:
         """Store a value as a markdown file.
 
         If value is a dict with 'content' key, uses that as body
@@ -69,7 +69,7 @@ class SemanticMemory(MemoryProvider):
         content = "\n".join(frontmatter_parts) + "\n\n" + body
         filepath.write_text(content)
 
-    async def retrieve(self, key: str) -> Optional[Any]:
+    async def retrieve(self, key: str) -> Any | None:
         filepath = self.directory / f"{self._sanitize_key(key)}.md"
         if not filepath.exists():
             return None
@@ -81,7 +81,7 @@ class SemanticMemory(MemoryProvider):
         }
 
     async def search(self, query: str, limit: int = 10) -> list[MemoryEntry]:
-        results = []
+        results: list[MemoryEntry] = []
         for filepath in sorted(self.directory.glob("*.md"), reverse=True):
             if len(results) >= limit:
                 break

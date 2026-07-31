@@ -1,6 +1,5 @@
 # Backtest Engine — Run strategy rules against historical data
 
-from typing import Optional
 
 
 class BacktestResult:
@@ -50,7 +49,7 @@ class BacktestEngine:
         strategy_signals: list[dict],
         price_data: list[dict],
         initial_capital: float = 1_000_000,
-        benchmark_code: Optional[str] = None,
+        benchmark_code: str | None = None,
     ) -> BacktestResult:
         """Run backtest for a given strategy against price data."""
         # TODO: Implement full backtesting

@@ -8,10 +8,9 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any
 
-from runtime.models import Event, EventType
-
+from runtime.models import EventType
 
 # ─── CLI Trace Formatter ─────────────────────────────────────────────────
 
@@ -118,8 +117,8 @@ def format_scorecard_cli(score) -> str:
 
 def export_trace_json(
     trace: list[dict],
-    score: any = None,
-    filepath: Optional[str] = None,
+    score: Any = None,
+    filepath: str | None = None,
 ) -> str:
     """Export trace and optional score to JSON.
 

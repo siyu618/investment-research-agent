@@ -4,7 +4,6 @@ import json
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
 
 
 class DataCache:
@@ -36,7 +35,7 @@ class DataCache:
                 CREATE INDEX IF NOT EXISTS idx_cache_key ON cache(cache_key);
             """)
 
-    def get(self, cache_key: str) -> Optional[any]:
+    def get(self, cache_key: str) -> any | None:
         """Get cached data if still fresh."""
         with sqlite3.connect(self.db_path) as conn:
             row = conn.execute(

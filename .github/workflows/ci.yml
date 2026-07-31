@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-type:
+    name: Ruff + Mypy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dev deps
+        run: pip install ".[dev]"
+
+      - name: Ruff check
+        run: ruff check agent runtime strategies tools memory skills
+
+      - name: Mypy check
+        run: mypy agent runtime strategies tools memory skills --ignore-missing-imports
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install deps
+        run: pip install ".[dev]"
+
+      - name: Unit + integration tests
+        run: pytest tests/ -q --tb=short
+
+      - name: Coverage
+        run: pytest tests/ -q --cov=agent --cov=runtime --cov=strategies --cov=tools --cov-report=term-missing
+
+  e2e-mock:
+    name: E2E (Mock provider)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install ".[dev]"
+
+      - name: Run mock end-to-end
+        run: python -m agent --requirement "筛选5只低风险股票" --output /tmp/reports
+
+      - name: Verify run artifacts
+        run: |
+          test -d runs || echo "no runs dir (expected if RUNTIME_RUN_DIR not set)"
+          ls /tmp/reports/

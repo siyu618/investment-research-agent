@@ -14,33 +14,30 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import time
 import uuid
+from collections.abc import Callable
 from datetime import datetime
-from typing import Any, Callable, Optional
+from typing import Any
 
 from runtime.errors import (
-    AgentError,
     FatalError,
     RecoverableError,
-    SkillError,
-    TimeoutError,
 )
 from runtime.graph import (
-    GraphState,
     ExecutionLayer,
+    GraphState,
     compute_layers,
     validate_graph,
 )
 from runtime.models import (
-    Edge,
     Event,
     EventType,
     ExecutionContext,
     GraphResult,
     NodeResult,
     RuntimeConfig,
-    TaskConfig,
     TaskGraph,
     TaskNode,
 )
@@ -61,7 +58,7 @@ class Scheduler:
         self,
         skill_registry: Any = None,
         event_bus: Any = None,
-        config: Optional[RuntimeConfig] = None,
+        config: RuntimeConfig | None = None,
     ):
         self.skill_registry = skill_registry
         self.event_bus = event_bus
@@ -73,8 +70,8 @@ class Scheduler:
         self,
         graph: TaskGraph,
         context: ExecutionContext,
-        initial_state: Optional[dict] = None,
-        skill_executor: Optional[Callable] = None,
+        initial_state: dict | None = None,
+        skill_executor: Callable | None = None,
     ) -> GraphResult:
         """Execute the full TaskGraph.
 
@@ -115,7 +112,7 @@ class Scheduler:
                     layer, graph, context, state, skill_executor
                 )
 
-        except FatalError as e:
+        except FatalError:
             # Propagate to all still-running nodes? Already handled by _execute_layer.
             pass
         except asyncio.CancelledError:
@@ -151,7 +148,7 @@ class Scheduler:
         graph: TaskGraph,
         context: ExecutionContext,
         state: GraphState,
-        skill_executor: Optional[Callable],
+        skill_executor: Callable | None,
     ) -> None:
         """Execute all nodes in a layer concurrently."""
         tasks = []
@@ -188,7 +185,7 @@ class Scheduler:
         graph: TaskGraph,
         context: ExecutionContext,
         state: GraphState,
-        skill_executor: Optional[Callable],
+        skill_executor: Callable | None,
     ) -> None:
         """Execute a single node with retry/timeout/error handling."""
         node = graph.nodes[node_id]
@@ -201,7 +198,7 @@ class Scheduler:
             "layer_deps": self._get_dependency_ids(graph, node_id),
         })
 
-        last_error: Optional[str] = None
+        last_error: str | None = None
         success = False
         output = None
         retry_count = 0
@@ -233,7 +230,7 @@ class Scheduler:
                 success = True
                 break
 
-            except asyncio.TimeoutError:
+            except builtins.TimeoutError:
                 last_error = f"Timeout after {node.config.timeout}s"
                 self._emit(EventType.ERROR_ENCOUNTERED, {
                     "node_id": node_id,
@@ -321,7 +318,7 @@ class Scheduler:
         node: TaskNode,
         input_data: dict,
         context: ExecutionContext,
-        skill_executor: Optional[Callable],
+        skill_executor: Callable | None,
     ) -> Any:
         """Invoke the skill for this node using the SkillLifecycle.
 
@@ -343,7 +340,7 @@ class Scheduler:
                 f"could not be loaded"
             )
 
-        from skills.base.skill_sdk import SkillLifecycle, ensure_skill_lifecycle
+        from skills.base.skill_sdk import ensure_skill_lifecycle
         skill_lifecycle = ensure_skill_lifecycle(skill)
 
         # Emit lifecycle events
@@ -411,7 +408,7 @@ class Scheduler:
                 raise FatalError(
                     f"Cannot load skill '{skill_name}' from module "
                     f"'{module_path}': {e}"
-                )
+                ) from e
 
         return None
 
@@ -480,7 +477,7 @@ class Scheduler:
         )
         self.event_bus.emit(event)
 
-    def get_result(self, node_id: str) -> Optional[NodeResult]:
+    def get_result(self, node_id: str) -> NodeResult | None:
         """Get the result for a specific node."""
         return self._results.get(node_id)
 

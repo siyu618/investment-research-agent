@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Optional
+from typing import Any
 
 from runtime.graph import build_graph
 from runtime.models import GraphResult, RuntimeConfig, TaskGraph
@@ -44,14 +44,14 @@ class Executor:
         self,
         provider: MarketDataProvider,
         event_bus: Any = None,
-        config: Optional[RuntimeConfig] = None,
+        config: RuntimeConfig | None = None,
     ):
         self.provider = provider
         self.skills = SkillMap(provider)
         self.event_bus = event_bus
         self.config = config
-        self.scheduler: Optional[Scheduler] = None
-        self._last_graph_result: Optional[GraphResult] = None
+        self.scheduler: Scheduler | None = None
+        self._last_graph_result: GraphResult | None = None
         self._stocks: list = []  # loaded by data-collector step
 
     async def execute_plan(self, plan: AnalysisPlan) -> dict:
@@ -140,7 +140,7 @@ class Executor:
             output_nodes=output_nodes or None,
         )
 
-    def get_graph_result(self) -> Optional[GraphResult]:
+    def get_graph_result(self) -> GraphResult | None:
         return self._last_graph_result
 
     @property

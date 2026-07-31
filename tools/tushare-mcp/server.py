@@ -13,15 +13,13 @@ Usage:
     python -m tools.tushare_mcp.server --test get_stock_basic '{"market": "SSE"}'
 """
 
-import os
-from typing import Optional
 
 # Mock implementation — will use tushare SDK and MCP SDK in production
 
 
 def get_stock_basic(
-    market: Optional[str] = None,
-    industry: Optional[str] = None,
+    market: str | None = None,
+    industry: str | None = None,
 ) -> list[dict]:
     """List stocks with basic info filtered by market and/or industry.
 
@@ -114,7 +112,7 @@ def get_trade_calendar(
 
 def get_money_flow(
     ts_code: str,
-    trade_date: Optional[str] = None,
+    trade_date: str | None = None,
 ) -> list[dict]:
     """Get money flow data."""
     raise NotImplementedError(

@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Any
 
 
 class RiskLevel(str, Enum):
@@ -32,9 +32,9 @@ class Stock:
     """Represents a stock entity from Tushare data."""
     ts_code: str
     name: str
-    industry: Optional[str] = None
-    market: Optional[str] = None
-    list_date: Optional[str] = None
+    industry: str | None = None
+    market: str | None = None
+    list_date: str | None = None
     is_active: bool = True
 
 
@@ -44,13 +44,13 @@ class FinancialStatement:
     ts_code: str
     end_date: str
     report_type: str
-    revenue: Optional[float] = None
-    net_profit: Optional[float] = None
-    total_assets: Optional[float] = None
-    total_liabilities: Optional[float] = None
-    cash_flow: Optional[float] = None
-    roe: Optional[float] = None
-    basic_eps: Optional[float] = None
+    revenue: float | None = None
+    net_profit: float | None = None
+    total_assets: float | None = None
+    total_liabilities: float | None = None
+    cash_flow: float | None = None
+    roe: float | None = None
+    basic_eps: float | None = None
 
 
 @dataclass
@@ -73,7 +73,7 @@ class RiskFactor:
     category: str
     description: str
     severity: RiskLevel
-    metric_value: Optional[float] = None
+    metric_value: float | None = None
 
 
 # ─── Analysis Context & Result ──────────────────────────────────────────
@@ -101,7 +101,7 @@ class AnalysisContext:
     price_data: list[DailyPrice] = field(default_factory=list)
     market_data: dict = field(default_factory=dict)
     user_preferences: dict = field(default_factory=dict)
-    memory: Optional[MemoryAccess] = None
+    memory: MemoryAccess | None = None
 
 
 @dataclass
@@ -194,7 +194,7 @@ class InvestmentReport:
     agent_version: str = "1.0.0"
     user_requirement: str = ""
     market_overview: str = ""
-    candidates: list[AnalysisResult] = field(default_factory=list)
+    candidates: list[Any] = field(default_factory=list)
     portfolio_suggestion: str = ""
     disclaimer: str = (
         "This report is AI-generated for reference only. "

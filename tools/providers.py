@@ -10,10 +10,8 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any, Optional
-
+from dataclasses import dataclass
+from typing import Any
 
 # ─── Data Models ──────────────────────────────────────────────────────────
 
@@ -52,26 +50,26 @@ class FinancialStatement:
     report_type: str = "annual"      # annual | q1 | q2 | q3
 
     # Income statement
-    revenue: Optional[float] = None          # 营业总收入
-    net_profit: Optional[float] = None        # 归母净利润
-    operating_profit: Optional[float] = None  # 营业利润
+    revenue: float | None = None          # 营业总收入
+    net_profit: float | None = None        # 归母净利润
+    operating_profit: float | None = None  # 营业利润
 
     # Balance sheet
-    total_assets: Optional[float] = None      # 资产总计
-    total_liabilities: Optional[float] = None # 负债合计
-    equity: Optional[float] = None            # 归母股东权益
+    total_assets: float | None = None      # 资产总计
+    total_liabilities: float | None = None # 负债合计
+    equity: float | None = None            # 归母股东权益
 
     # Cash flow
-    operating_cash_flow: Optional[float] = None  # 经营活动现金流净额
-    free_cash_flow: Optional[float] = None        # 自由现金流
+    operating_cash_flow: float | None = None  # 经营活动现金流净额
+    free_cash_flow: float | None = None        # 自由现金流
 
     # Per share
-    basic_eps: Optional[float] = None         # 基本每股收益
-    bvps: Optional[float] = None              # 每股净资产
+    basic_eps: float | None = None         # 基本每股收益
+    bvps: float | None = None              # 每股净资产
 
     # Calculated fields
-    gross_margin: Optional[float] = None      # (revenue - cost) / revenue
-    roe: Optional[float] = None               # net_profit / equity
+    gross_margin: float | None = None      # (revenue - cost) / revenue
+    roe: float | None = None               # net_profit / equity
 
 
 # ─── Provider Interface ────────────────────────────────────────────────────
@@ -86,7 +84,7 @@ class MarketDataProvider(ABC):
 
     @abstractmethod
     async def get_stock_basic(
-        self, market: Optional[str] = None, industry: Optional[str] = None
+        self, market: str | None = None, industry: str | None = None
     ) -> list[StockBasic]:
         ...
 
@@ -193,7 +191,7 @@ def _make_prices(ts_code: str) -> list[DailyPrice]:
     """Generate deterministic mock daily price data (2 years)."""
     h = hash(ts_code) & 0xFFFFFFFF
     base_price = 20.0 + (h % 100)  # 20-120
-    prices = []
+    prices: list[DailyPrice] = []
     # Random walk with drift, bounded volatility
     for day in range(500):
         year = 2024 if day < 365 else 2025
@@ -239,7 +237,7 @@ class MockMarketDataProvider(MarketDataProvider):
         self._cache: dict[str, Any] = {}
 
     async def get_stock_basic(
-        self, market: Optional[str] = None, industry: Optional[str] = None
+        self, market: str | None = None, industry: str | None = None
     ) -> list[StockBasic]:
         results = []
         for ts_code, info in _STOCK_UNIVERSE.items():

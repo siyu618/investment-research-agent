@@ -9,12 +9,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Optional
 
-from skills.base.skill_sdk import SkillLifecycle, SkillMetadata, SkillOutput, SkillPlan, SkillVerdict
-from tools.providers import FinancialStatement, DailyPrice, StockBasic, MarketDataProvider
-
+from skills.base.skill_sdk import (
+    SkillLifecycle,
+    SkillMetadata,
+    SkillOutput,
+    SkillPlan,
+    SkillVerdict,
+)
+from tools.providers import FinancialStatement, MarketDataProvider, StockBasic
 
 # ─── Provenance ───────────────────────────────────────────────────────────
 
@@ -94,8 +97,10 @@ def compute_revenue_growth(stmts: list[FinancialStatement]) -> list[MetricProven
     results = []
     for i in range(1, len(annuals)):
         prev, curr = annuals[i - 1], annuals[i]
-        if prev.revenue and prev.revenue != 0:
-            growth = (curr.revenue - prev.revenue) / prev.revenue
+        prev_rev = prev.revenue
+        curr_rev = curr.revenue
+        if prev_rev and prev_rev != 0 and curr_rev is not None:
+            growth = (curr_rev - prev_rev) / prev_rev
             results.append(MetricProvenance(
                 metric="revenue_growth",
                 value=round(growth, 4),
@@ -103,7 +108,7 @@ def compute_revenue_growth(stmts: list[FinancialStatement]) -> list[MetricProven
                 period=f"{prev.end_date[:4]}-{curr.end_date[:4]}",
                 available_at=f"{curr.end_date[:4]}-12-31",
                 source="income_statement",
-                warning="缺失前期数据" if prev.revenue is None else "",
+                warning="缺失前期数据" if prev_rev is None else "",
             ))
     return results
 
@@ -117,8 +122,10 @@ def compute_profit_growth(stmts: list[FinancialStatement]) -> list[MetricProvena
     results = []
     for i in range(1, len(annuals)):
         prev, curr = annuals[i - 1], annuals[i]
-        if prev.net_profit and prev.net_profit != 0:
-            growth = (curr.net_profit - prev.net_profit) / abs(prev.net_profit)
+        prev_np = prev.net_profit
+        curr_np = curr.net_profit
+        if prev_np and prev_np != 0 and curr_np is not None:
+            growth = (curr_np - prev_np) / abs(prev_np)
             results.append(MetricProvenance(
                 metric="net_profit_growth",
                 value=round(growth, 4),
@@ -192,9 +199,12 @@ def compute_gross_margin_change(stmts: list[FinancialStatement]) -> list[MetricP
     )
     results = []
     for s in annuals:
+        gm = s.gross_margin
+        if gm is None:
+            continue
         results.append(MetricProvenance(
             metric="gross_margin",
-            value=round(s.gross_margin, 4),
+            value=round(gm, 4),
             unit="ratio",
             period=s.end_date[:4],
             available_at=f"{s.end_date[:4]}-12-31",
@@ -220,7 +230,6 @@ def compute_fundamental_score(
         (score 0-1, confidence 0-1, explanation)
     """
     score_parts = []
-    explanations = []
 
     # ROE scoring (weight 25%)
     if roes:
@@ -352,7 +361,7 @@ class FundamentalAnalysisSkill(SkillLifecycle):
     Depends on MarketDataProvider for all data access.
     """
 
-    def __init__(self, provider: Optional[MarketDataProvider] = None):
+    def __init__(self, provider: MarketDataProvider | None = None):
         self._provider = provider
         self._profile_cache: dict[str, CompanyFundamentalProfile] = {}
 
@@ -378,7 +387,7 @@ class FundamentalAnalysisSkill(SkillLifecycle):
           - stocks: list[StockBasic]
           - provider: MarketDataProvider
         """
-        provider: MarketDataProvider = context.get("provider") or self._provider
+        provider: MarketDataProvider | None = context.get("provider") or self._provider
         if provider is None:
             return SkillOutput(
                 score=0.0, confidence=0.0,

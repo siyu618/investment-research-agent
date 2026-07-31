@@ -6,25 +6,23 @@ Usage:
     python -m agent --interactive
 """
 
-import asyncio
 import argparse
-import sys
+import asyncio
 import logging
+import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from agent.executor import Executor
 from agent.planner import Planner
-from agent.verifier import Verifier
 from agent.report_generator import ReportGenerator
-from agent.registry import SkillRegistry
+from agent.verifier import Verifier
 from runtime import RuntimeConfig
 from runtime.harness import Harness
 from runtime.lifecycle import LoggingHook
 from runtime.tracing import EventBus
-from runtime.models import Event, EventType
-from tools.providers import MockMarketDataProvider
+from tools.providers import MarketDataProvider, MockMarketDataProvider
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s:%(name)s:%(message)s")
 
@@ -70,7 +68,7 @@ async def run_research(requirement: str, args):
     # Provider
     if args.provider == "tushare":
         from tools.providers import OfficialTushareMCPProvider
-        provider = OfficialTushareMCPProvider()
+        provider: MarketDataProvider = OfficialTushareMCPProvider()
     else:
         provider = MockMarketDataProvider()
 
@@ -81,7 +79,7 @@ async def run_research(requirement: str, args):
     reporter = ReportGenerator()
 
     print(f"\n{'='*60}")
-    print(f"  投资研究 Agent")
+    print("  投资研究 Agent")
     print(f"  数据提供者: {args.provider}")
     print(f"{'='*60}")
     print(f"  需求: {requirement}")

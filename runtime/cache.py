@@ -5,17 +5,16 @@
 
 from __future__ import annotations
 
-import json
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Optional
+from typing import Any
 
 
 class CacheProvider(ABC):
     """Abstract cache provider interface."""
 
     @abstractmethod
-    async def get(self, key: str) -> Optional[Any]: ...
+    async def get(self, key: str) -> Any | None: ...
 
     @abstractmethod
     async def set(self, key: str, value: Any, ttl: int) -> None: ...
@@ -36,7 +35,7 @@ class TTLCache(CacheProvider):
     def __init__(self):
         self._store: dict[str, tuple[Any, float]] = {}  # key → (value, expires_at)
 
-    async def get(self, key: str) -> Optional[Any]:
+    async def get(self, key: str) -> Any | None:
         entry = self._store.get(key)
         if entry is None:
             return None

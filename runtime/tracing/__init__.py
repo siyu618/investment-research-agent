@@ -8,8 +8,8 @@
 #     bus.emit(Event(id=uuid, type="ToolInvoked", ...))
 #     bus.subscribe("Tool*", my_handler)
 
-from .event_bus import EventBus
-
 from runtime.models import EventType
+
+from .event_bus import EventBus
 
 __all__ = ["EventBus", "EventType"]

@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Any
 
 from runtime.models import Event, ExecutionContext
 
@@ -43,7 +43,7 @@ class LifecycleHook(ABC):
 
     @abstractmethod
     async def on_finish(
-        self, context: ExecutionContext, result: any, error: Optional[Exception]
+        self, context: ExecutionContext, result: Any, error: Exception | None
     ) -> None:
         """Called when the Harness completes a run."""
         ...
@@ -83,7 +83,7 @@ class LoggingHook(LifecycleHook):
         print(f"[ERROR] Step={step}: {error}")
 
     async def on_finish(
-        self, context: ExecutionContext, result: any, error: Optional[Exception]
+        self, context: ExecutionContext, result: Any, error: Exception | None
     ) -> None:
         status = "FAILED" if error else "SUCCESS"
         print(f"[FINISH] {status} — Session: {context.session_id}")

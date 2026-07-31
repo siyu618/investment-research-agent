@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 from memory.interfaces import MemoryEntry, MemoryProvider, MemoryStats, MemoryTier
 
@@ -28,11 +28,11 @@ class WorkingMemory(MemoryProvider):
     def tier(self) -> MemoryTier:
         return MemoryTier.WORKING
 
-    async def store(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
+    async def store(self, key: str, value: Any, ttl: int | None = None) -> None:
         """Store in working memory. TTL is ignored (session-scoped)."""
         self._data[key] = value
 
-    async def retrieve(self, key: str) -> Optional[Any]:
+    async def retrieve(self, key: str) -> Any | None:
         """Retrieve from working memory."""
         value = self._data.get(key)
         if value is not None:

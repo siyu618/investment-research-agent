@@ -10,7 +10,7 @@ import json
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from memory.interfaces import MemoryEntry, MemoryProvider, MemoryStats, MemoryTier
 
@@ -51,7 +51,7 @@ class ResearchMemory(MemoryProvider):
     def tier(self) -> MemoryTier:
         return MemoryTier.RESEARCH
 
-    async def store(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
+    async def store(self, key: str, value: Any, ttl: int | None = None) -> None:
         tags = []
         if isinstance(value, dict):
             tags = value.get("tags", [])
@@ -67,7 +67,7 @@ class ResearchMemory(MemoryProvider):
                 (key, json.dumps(value), datetime.now().isoformat(), ttl, json.dumps(tags)),
             )
 
-    async def retrieve(self, key: str) -> Optional[Any]:
+    async def retrieve(self, key: str) -> Any | None:
         with sqlite3.connect(self.db_path) as conn:
             row = conn.execute(
                 "SELECT value FROM research WHERE key = ?", (key,),

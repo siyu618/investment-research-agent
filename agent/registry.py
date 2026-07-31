@@ -1,8 +1,8 @@
 # Skills Registry — Central catalog of investment analysis skills
 
-import yaml
 from pathlib import Path
-from typing import Optional
+
+import yaml
 
 from strategies.base.models import StrategyCategory
 
@@ -30,7 +30,7 @@ class SkillRegistry:
         """List all registered skills with metadata."""
         return list(self._skills.values())
 
-    def get_skill(self, name: str) -> Optional[dict]:
+    def get_skill(self, name: str) -> dict | None:
         """Get skill metadata by name."""
         return self._skills.get(name)
 

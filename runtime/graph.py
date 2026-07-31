@@ -6,21 +6,17 @@
 
 from __future__ import annotations
 
-import uuid
-from collections import defaultdict, deque
-from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any, Optional
+import builtins
+from collections import deque
+from dataclasses import dataclass
+from typing import Any
 
 from runtime.models import (
     Edge,
-    GraphResult,
-    NodeResult,
     TaskConfig,
     TaskGraph,
     TaskNode,
 )
-
 
 # ─── Graph Validation ────────────────────────────────────────────────────
 
@@ -238,7 +234,7 @@ class GraphState:
     The Scheduler manages state lifecycle.
     """
 
-    def __init__(self, initial: Optional[dict] = None):
+    def __init__(self, initial: dict | None = None):
         self._data: dict[str, Any] = dict(initial or {})
 
     def get(self, key: str, default: Any = None) -> Any:
@@ -258,7 +254,7 @@ class GraphState:
         return dict(self._data)
 
     @property
-    def keys(self) -> set:
+    def keys(self) -> builtins.set:
         return set(self._data.keys())
 
 
@@ -268,8 +264,8 @@ class GraphState:
 def build_graph(
     nodes: list[dict],
     edges: list[tuple[str, str]],
-    entry_points: Optional[list[str]] = None,
-    output_nodes: Optional[list[str]] = None,
+    entry_points: list[str] | None = None,
+    output_nodes: list[str] | None = None,
 ) -> TaskGraph:
     """Convenience builder for creating TaskGraphs from dicts.
 

@@ -12,7 +12,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
 
 from strategies.base.models import AnalysisPlan, AnalysisStep
 
@@ -70,7 +69,7 @@ class Planner:
     async def create_plan(
         self,
         requirement: str,
-        available_skills: Optional[list[dict]] = None,
+        available_skills: list[dict] | None = None,
     ) -> AnalysisPlan:
         """Parse user requirement and produce a structured AnalysisPlan.
 
@@ -86,7 +85,6 @@ class Planner:
         Supports Chinese and English keywords.
         Falls back to sensible defaults for ambiguous input.
         """
-        req_lower = requirement.lower()
         req_orig = requirement
 
         # --- Stock pool ---

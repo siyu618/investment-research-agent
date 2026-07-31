@@ -3,13 +3,12 @@
 # All runtime errors are classified so the Harness can make
 # intelligent recovery decisions.
 
-from typing import Optional
 
 
 class AgentError(Exception):
     """Base error for all agent runtime errors."""
 
-    def __init__(self, message: str, context: Optional[dict] = None):
+    def __init__(self, message: str, context: dict | None = None):
         self.message = message
         self.context = context or {}
         super().__init__(self.message)
@@ -25,8 +24,8 @@ class RecoverableError(AgentError):
     def __init__(
         self,
         message: str,
-        retry_after: Optional[float] = None,
-        context: Optional[dict] = None,
+        retry_after: float | None = None,
+        context: dict | None = None,
     ):
         super().__init__(message, context)
         self.retry_after = retry_after
@@ -71,7 +70,7 @@ class ToolError(AgentError):
         message: str,
         tool_name: str,
         recoverable: bool = False,
-        context: Optional[dict] = None,
+        context: dict | None = None,
     ):
         super().__init__(message, context)
         self.tool_name = tool_name

@@ -1,0 +1,87 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tushare-investment-agent"
+version = "0.2.0"
+description = "AI investment research agent built on Tushare data — reference implementation of an agentic research workflow"
+requires-python = ">=3.11"
+readme = "README.md"
+license = { text = "MIT" }
+dependencies = [
+    "tushare>=1.4.0",
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+    "httpx>=0.25",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "pytest-cov>=4.0",
+    "ruff>=0.4",
+    "mypy>=1.8",
+    "pre-commit>=3.0",
+]
+
+[tool.setuptools]
+packages = [
+    "agent",
+    "runtime",
+    "runtime.tracing",
+    "skills",
+    "skills.base",
+    "strategies",
+    "strategies.base",
+    "strategies.fundamental_analysis",
+    "strategies.valuation_analysis",
+    "strategies.risk_analysis",
+    "strategies.portfolio_selection",
+    "tools",
+    "memory",
+    "evaluations",
+    "evaluations.trajectory",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.coverage.run]
+source = ["agent", "runtime", "strategies", "tools", "memory", "skills"]
+omit = ["*/tests/*", "*/__pycache__/*"]
+
+[tool.coverage.report]
+fail_under = 40
+show_missing = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = [
+    "E501",  # line length enforced by ruff format
+]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+warn_unused_configs = true
+# Hyphenated dirs are not valid Python packages; skip them.
+exclude = [
+    "tools/market-data",
+    "tools/tushare-mcp",
+    "strategies/fundamental-analysis",
+    "strategies/valuation-analysis",
+    "strategies/risk-analysis",
+    "strategies/technical-analysis",
+    "strategies/portfolio-selection",
+    "engineering-ai-standards",
+]

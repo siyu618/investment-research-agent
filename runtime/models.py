@@ -8,8 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Optional
-
+from typing import Any
 
 # ─── Event System ───────────────────────────────────────────────────────
 
@@ -79,7 +78,7 @@ class Event:
     timestamp: str
     correlation_id: str
     payload: dict = field(default_factory=dict)
-    parent_id: Optional[str] = None
+    parent_id: str | None = None
     metadata: dict = field(default_factory=dict)
 
 
@@ -185,7 +184,7 @@ class NodeResult:
     node_id: str
     success: bool
     output: Any = None
-    error: Optional[str] = None
+    error: str | None = None
     duration_ms: int = 0
     retry_count: int = 0
 
@@ -197,7 +196,7 @@ class GraphResult:
     success: bool
     node_results: dict[str, NodeResult] = field(default_factory=dict)
     total_duration_ms: int = 0
-    error: Optional[str] = None
+    error: str | None = None
 
 
 # ─── Agent Result ──────────────────────────────────────────────────────
@@ -209,7 +208,7 @@ class AgentResult:
     session_id: str
     success: bool
     output: Any = None
-    graph_result: Optional[GraphResult] = None
+    graph_result: GraphResult | None = None
     total_duration_ms: int = 0
     event_count: int = 0
-    error: Optional[str] = None
+    error: str | None = None

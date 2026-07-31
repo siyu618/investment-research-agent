@@ -9,7 +9,7 @@ import json
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from memory.interfaces import MemoryEntry, MemoryProvider, MemoryStats, MemoryTier
 
@@ -49,7 +49,7 @@ class EpisodicMemory(MemoryProvider):
     def tier(self) -> MemoryTier:
         return MemoryTier.EPISODIC
 
-    async def store(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
+    async def store(self, key: str, value: Any, ttl: int | None = None) -> None:
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
                 """INSERT OR REPLACE INTO episodes (key, value, created_at, ttl_seconds)
@@ -57,7 +57,7 @@ class EpisodicMemory(MemoryProvider):
                 (key, json.dumps(value), datetime.now().isoformat(), ttl),
             )
 
-    async def retrieve(self, key: str) -> Optional[Any]:
+    async def retrieve(self, key: str) -> Any | None:
         with sqlite3.connect(self.db_path) as conn:
             row = conn.execute(
                 "SELECT value, ttl_seconds, created_at FROM episodes WHERE key = ?",

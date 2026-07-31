@@ -5,8 +5,9 @@
 
 from __future__ import annotations
 
+from dataclasses import field
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 from strategies.base.models import InvestmentReport
 
@@ -37,7 +38,6 @@ class ReportGenerator:
         fund_output = self._extract_step(results, "step-2")
         val_output = self._extract_step(results, "step-3")
         risk_output = self._extract_step(results, "step-4")
-        port_output = self._extract_step(results, "step-5")
 
         market_overview = self._build_market_overview(data_output)
         candidates = self._build_candidates(fund_output, val_output, risk_output)
@@ -55,31 +55,31 @@ class ReportGenerator:
     def format_markdown(self, report: InvestmentReport) -> str:
         """Render the report as a Markdown string."""
         lines = [
-            f"# 📊 投资研究报告",
-            f"",
+            "# 📊 投资研究报告",
+            "",
             f"**报告编号：** {report.report_id}",
             f"**生成时间：** {report.created_at[:19]}",
             f"**Agent 版本：** {report.agent_version}",
-            f"",
-            f"---",
-            f"",
-            f"## 一、用户需求",
-            f"",
+            "",
+            "---",
+            "",
+            "## 一、用户需求",
+            "",
             f"{report.user_requirement}",
-            f"",
+            "",
         ]
 
         # Market overview
         if report.market_overview:
             lines.extend([
-                f"## 二、市场概况",
-                f"",
+                "## 二、市场概况",
+                "",
                 report.market_overview,
-                f"",
+                "",
             ])
 
         # Candidate table
-        lines.extend([f"## 三、候选股票评分及排名", f""])
+        lines.extend(["## 三、候选股票评分及排名", ""])
 
         if report.candidates:
             lines.append("| 排名 | 股票代码 | 股票名称 | 行业 | 基本面 | 估值 | 风险 | 综合 |")
@@ -95,9 +95,9 @@ class ReportGenerator:
             # Detail
             for c in report.candidates:
                 lines.extend([
-                    f"",
+                    "",
                     f"### {c.ts_code} {c.name}（{c.industry}）",
-                    f"",
+                    "",
                     f"- **基本面评分：** {getattr(c, 'fundamental_score', 0):.2f}",
                     f"- **估值评分：** {getattr(c, 'val_score', 0):.2f}",
                     f"- **风险评分：** {getattr(c, 'risk_score', 0):.2f}",
@@ -106,33 +106,33 @@ class ReportGenerator:
                 explanation = getattr(c, "explanation", "")
                 if explanation:
                     lines.extend([
-                        f"",
-                        f"📝 **分析说明**",
-                        f"",
-                        f"```",
+                        "",
+                        "📝 **分析说明**",
+                        "",
+                        "```",
                         explanation[:500],
-                        f"```",
+                        "```",
                     ])
 
         lines.extend([
-            f"",
-            f"## 四、组合建议",
-            f"",
+            "",
+            "## 四、组合建议",
+            "",
             report.portfolio_suggestion,
-            f"",
-            f"---",
-            f"",
-            f"## 免责声明",
-            f"",
+            "",
+            "---",
+            "",
+            "## 免责声明",
+            "",
             report.disclaimer,
-            f"",
+            "",
         ])
 
         return "\n".join(lines)
 
     # ─── Internal helpers ───────────────────────────────────────────────
 
-    def _build_market_overview(self, data_output: Optional[dict]) -> str:
+    def _build_market_overview(self, data_output: dict | None) -> str:
         if not data_output:
             return "未获取到市场数据。"
         count = data_output.get("stock_count", 0)
@@ -154,7 +154,7 @@ class ReportGenerator:
             risk_score: float = 0.0
             composite_score: float = 0.0
             explanation: str = ""
-            warnings: list[str] = None
+            warnings: list[str] = field(default_factory=list)
 
         fund_profiles = self._get_profiles(fund)
         val_profiles = self._get_profiles(val)
@@ -175,12 +175,14 @@ class ReportGenerator:
         for p in val_profiles:
             ts = p.get("ts_code") if isinstance(p, dict) else getattr(p, "ts_code", "")
             if ts in stock_map:
-                stock_map[ts].val_score = p.get("score") if isinstance(p, dict) else getattr(p, "score", 0)
+                val_raw = p.get("score") if isinstance(p, dict) else getattr(p, "score", 0)
+                stock_map[ts].val_score = float(val_raw or 0)
 
         for p in risk_profiles:
             ts = p.ts_code if not isinstance(p, dict) else p.get("ts_code", "")
             if ts in stock_map:
-                stock_map[ts].risk_score = p.score if not isinstance(p, dict) else p.get("score", 0)
+                risk_raw = p.score if not isinstance(p, dict) else p.get("score", 0)
+                stock_map[ts].risk_score = float(risk_raw or 0)
 
         # Compute composite
         for c in stock_map.values():
@@ -196,7 +198,7 @@ class ReportGenerator:
         return candidates[:5]
 
     @staticmethod
-    def _get_profiles(output: Optional[dict]) -> list:
+    def _get_profiles(output: dict | None) -> list:
         if output is None:
             return []
         data = output.get("data", output)
@@ -205,7 +207,7 @@ class ReportGenerator:
         return []
 
     @staticmethod
-    def _extract_step(results: dict, step_id: str) -> Optional[dict]:
+    def _extract_step(results: dict, step_id: str) -> dict | None:
         """Extract a single step's output from results dict."""
         raw = results.get(step_id)
         if raw is None:

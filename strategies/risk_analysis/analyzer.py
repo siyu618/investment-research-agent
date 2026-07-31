@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Optional
 
-from skills.base.skill_sdk import SkillLifecycle, SkillMetadata, SkillOutput, SkillPlan, SkillVerdict
+from skills.base.skill_sdk import (
+    SkillLifecycle,
+    SkillMetadata,
+    SkillOutput,
+    SkillPlan,
+    SkillVerdict,
+)
 from tools.providers import DailyPrice, MarketDataProvider, StockBasic
 
 
@@ -76,7 +81,7 @@ def compute_max_drawdown(prices: list[DailyPrice]) -> float:
 class RiskAnalysisSkill(SkillLifecycle):
     """Quantifies risk via volatility and maximum drawdown."""
 
-    def __init__(self, provider: Optional[MarketDataProvider] = None):
+    def __init__(self, provider: MarketDataProvider | None = None):
         self._provider = provider
 
     def set_provider(self, provider: MarketDataProvider) -> None:
@@ -94,7 +99,7 @@ class RiskAnalysisSkill(SkillLifecycle):
         )
 
     async def execute(self, context: dict, plan: SkillPlan) -> SkillOutput:
-        provider: MarketDataProvider = context.get("provider") or self._provider
+        provider: MarketDataProvider | None = context.get("provider") or self._provider
         stocks: list[StockBasic] = context.get("stocks", [])
         if not stocks or provider is None:
             return SkillOutput(score=0.5, confidence=0.0, data={"error": "missing provider or stocks"})

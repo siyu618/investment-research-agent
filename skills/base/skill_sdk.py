@@ -19,10 +19,8 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime
 from enum import Enum
-from typing import Any, Optional
-
+from typing import Any
 
 # ─── Lifecycle Status ────────────────────────────────────────────────────
 
@@ -98,8 +96,8 @@ class SkillOutput:
     `data` carries the domain-specific result.
     `artifacts` carries generated files (reports, charts, etc.).
     """
-    score: Optional[float] = None         # 0.0 - 1.0 (if applicable)
-    confidence: Optional[float] = None    # 0.0 - 1.0
+    score: float | None = None         # 0.0 - 1.0 (if applicable)
+    confidence: float | None = None    # 0.0 - 1.0
     data: dict = field(default_factory=dict)
     reasoning: str = ""
     warnings: list[str] = field(default_factory=list)
@@ -217,12 +215,12 @@ class LegacySkillAdapter(SkillLifecycle):
         return SkillMetadata(
             name=str(name),
             version=str(version),
-            description=raw.get("description", name),
-            category=raw.get("category", "analysis"),
-            tags=raw.get("tags", []),
-            input_schema=raw.get("input_schema", {}),
-            output_schema=raw.get("output_schema", {}),
-            timeout=raw.get("timeout", 60),
+            description=str(raw.get("description") or name),
+            category=str(raw.get("category") or "analysis"),
+            tags=list(raw.get("tags") or []),
+            input_schema=dict(raw.get("input_schema") or {}),
+            output_schema=dict(raw.get("output_schema") or {}),
+            timeout=int(raw.get("timeout") or 60),
         )
 
     async def execute(self, context: dict, plan: SkillPlan) -> SkillOutput:
@@ -234,8 +232,12 @@ class LegacySkillAdapter(SkillLifecycle):
             try:
                 # Convert dict context to AnalysisContext if possible
                 if "stock" in context or "financial_data" in context:
+                    from typing import cast
+
+                    from strategies.base.models import Stock
+
                     old_ctx = AnalysisContext(
-                        stock=context.get("stock"),
+                        stock=cast(Stock, context.get("stock")),
                         financial_data=context.get("financial_data", []),
                         price_data=context.get("price_data", []),
                         market_data=context.get("market_data", {}),
@@ -267,7 +269,7 @@ class LegacySkillAdapter(SkillLifecycle):
         return output.reasoning or str(output.data)[:500]
 
     @staticmethod
-    def _convert_result(old: AnalysisResult) -> SkillOutput:
+    def _convert_result(old: Any) -> SkillOutput:
         """Convert old AnalysisResult to new SkillOutput."""
         return SkillOutput(
             score=old.score,
@@ -290,7 +292,7 @@ def is_legacy_skill(skill: Any) -> bool:
     """
     if isinstance(skill, SkillLifecycle):
         return False
-    return hasattr(skill, "analyze") and callable(getattr(skill, "analyze"))
+    return hasattr(skill, "analyze") and callable(skill.analyze)
 
 
 def ensure_skill_lifecycle(skill: Any) -> SkillLifecycle:
