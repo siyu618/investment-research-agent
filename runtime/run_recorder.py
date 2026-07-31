@@ -72,8 +72,9 @@ class RunRecorder:
         self.write_json(run_id, "request.json", request)
         self.write_json(run_id, "plan.json", plan)
         self.write_json(run_id, "data_snapshot.json", {
-            "count": len(snapshots),
-            "snapshots": snapshots,
+            "slice_count": len(snapshots),
+            "as_of": snapshots[-1].get("as_of", "") if snapshots else "",
+            "slices": snapshots,
         })
         self.write_json(run_id, "verification.json", verification)
         self.write_json(run_id, "meta.json", meta)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from typing import Any
 
 from skills.base.skill_sdk import (
     SkillLifecycle,
@@ -99,19 +100,20 @@ class RiskAnalysisSkill(SkillLifecycle):
         )
 
     async def execute(self, context: dict, plan: SkillPlan) -> SkillOutput:
-        provider: MarketDataProvider | None = context.get("provider") or self._provider
+        from runtime.snapshot import ResearchDataset
+
+        dataset: ResearchDataset | None = context.get("dataset")
         stocks: list[StockBasic] = context.get("stocks", [])
-        if not stocks or provider is None:
-            return SkillOutput(score=0.5, confidence=0.0, data={"error": "missing provider or stocks"})
+        if not stocks or dataset is None:
+            return SkillOutput(score=0.5, confidence=0.0, data={"error": "missing dataset or stocks"})
 
         profiles = []
         for s in stocks:
-            try:
-                prices = await provider.get_daily_price(s.ts_code, "20240101", "20251231")
-            except Exception:
+            prices = self._prices_from_dataset(dataset, s.ts_code)
+            if not prices:
                 profiles.append(RiskProfile(
                     ts_code=s.ts_code, name=s.name, industry=s.industry,
-                    score=0.0, confidence=0.0, warnings=["价格数据获取失败"],
+                    score=0.0, confidence=0.0, warnings=["价格数据不可用"],
                 ))
                 continue
 
@@ -145,6 +147,22 @@ class RiskAnalysisSkill(SkillLifecycle):
             data={"profiles": profiles, "stock_count": len(profiles)},
             reasoning=f"Risk analysis for {len(profiles)} stocks",
         )
+
+    @staticmethod
+    def _prices_from_dataset(dataset: Any, ts_code: str) -> list[DailyPrice]:
+        """Convert snapshot price dicts to DailyPrice objects."""
+        from tools.providers import DailyPrice
+
+        price_dicts = dataset.prices(ts_code)
+        prices = []
+        for d in price_dicts:
+            try:
+                prices.append(DailyPrice(**{
+                    k: v for k, v in d.items() if k in DailyPrice.__dataclass_fields__
+                }))
+            except TypeError:
+                continue
+        return prices
 
     async def verify(self, context, output) -> SkillVerdict:
         return SkillVerdict(passed=True)

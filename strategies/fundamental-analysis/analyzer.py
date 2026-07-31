@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from skills.base.skill_sdk import (
     SkillLifecycle,
@@ -384,16 +385,18 @@ class FundamentalAnalysisSkill(SkillLifecycle):
         """Execute fundamental analysis for all stocks in context.
 
         Expected context keys:
-          - stocks: list[StockBasic]
-          - provider: MarketDataProvider
+          - dataset: ResearchDataset  (immutable, populated by Data Collector)
+          - stocks:  list[StockBasic]
         """
-        provider: MarketDataProvider | None = context.get("provider") or self._provider
-        if provider is None:
+        from runtime.snapshot import ResearchDataset
+
+        dataset: ResearchDataset | None = context.get("dataset")
+        if dataset is None:
             return SkillOutput(
                 score=0.0, confidence=0.0,
-                data={"error": "No MarketDataProvider configured"},
-                reasoning="Analysis skipped: no data provider available",
-                warnings=["MarketDataProvider is required"],
+                data={"error": "No ResearchDataset in context"},
+                reasoning="Analysis skipped: dataset required (Skills consume snapshots, not providers)",
+                warnings=["ResearchDataset is required"],
             )
 
         stocks: list[StockBasic] = context.get("stocks", [])
@@ -406,7 +409,7 @@ class FundamentalAnalysisSkill(SkillLifecycle):
 
         profiles = []
         for stock in stocks:
-            profile = await self._analyze_one(provider, stock)
+            profile = self._analyze_one(dataset, stock)
             profiles.append(profile)
 
         # Score across all stocks
@@ -424,26 +427,24 @@ class FundamentalAnalysisSkill(SkillLifecycle):
             warnings=[w for p in profiles for w in p.warnings],
         )
 
-    async def _analyze_one(self, provider: MarketDataProvider, stock: StockBasic) -> CompanyFundamentalProfile:
-        """Analyze fundamentals for a single stock."""
-        start, end = "20220101", "20251231"
+    def _analyze_one(self, dataset: Any, stock: StockBasic) -> CompanyFundamentalProfile:
+        """Analyze fundamentals for a single stock from the dataset.
 
-        # Get financial data
-        try:
-            stmts = await provider.get_financial_summary(stock.ts_code, start, end)
-        except Exception as e:
-            return CompanyFundamentalProfile(
-                ts_code=stock.ts_code, name=stock.name, industry=stock.industry,
-                score=0.0, confidence=0.0,
-                warnings=[f"数据获取失败: {e}"],
-            )
+        Pure function of the dataset — no provider access. Deterministic
+        and replayable.
+        """
+        from tools.providers import FinancialStatement
+
+        stmts_dicts = dataset.financials(stock.ts_code)
+        stmts = [FinancialStatement(**{k: v for k, v in d.items() if k in FinancialStatement.__dataclass_fields__})
+                 for d in stmts_dicts]
 
         if not stmts:
             return CompanyFundamentalProfile(
                 ts_code=stock.ts_code, name=stock.name, industry=stock.industry,
                 score=0.0, confidence=0.1,
                 warnings=["无财务报表数据"],
-                missing_data_flags=[f"financial_summary for {start}-{end} returned empty"],
+                missing_data_flags=["financials unavailable for this stock"],
             )
 
         # Compute metrics

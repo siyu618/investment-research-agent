@@ -40,7 +40,13 @@ async def main():
     parser.add_argument("--trace", action="store_true", help="启用执行跟踪")
     parser.add_argument("--provider", type=str, default="mock",
                         choices=["mock", "tushare"], help="数据提供者")
+    parser.add_argument("--replay", type=str, default=None,
+                        help="重放历史运行: runs/{run_id} 目录路径")
     args = parser.parse_args()
+
+    if args.replay:
+        await run_replay(args.replay, args)
+        return
 
     if args.interactive:
         print("Tushare Investment Research Agent — 交互模式")
@@ -159,6 +165,80 @@ async def run_research(requirement: str, args):
     # Hook error count
     if harness.hook_error_count > 0:
         print(f"\n⚠ {harness.hook_error_count} hook error(s)")
+
+
+async def run_replay(run_path: str, args):
+    """Replay a historical run from its recorded artifacts.
+
+    Rebuilds the ResearchDataset from data_snapshot.json and re-executes
+    the skills deterministically — no provider calls. Output must match
+    the original run's report (same snapshot → same result).
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    from runtime.snapshot import ResearchDataset
+
+    run_dir = _Path(run_path)
+    snapshot_file = run_dir / "data_snapshot.json"
+    if not snapshot_file.exists():
+        print(f"✗ 未找到数据快照: {snapshot_file}")
+        return
+
+    print(f"\n{'='*60}")
+    print(f"  Replay: {run_dir.name}")
+    print(f"{'='*60}\n")
+
+    # 1. Rebuild dataset from recorded snapshot
+    snap = _json.loads(snapshot_file.read_text())
+    dataset = ResearchDataset.from_dict(snap)
+    print(f"  快照: {snap.get('slice_count', 0)} slice(s), "
+          f"as_of={snap.get('as_of', '')}, "
+          f"source={dataset.slices[0].source if dataset.slices else '?'}")
+    print(f"  股票数: {len(dataset.stocks())}")
+
+    # 2. Re-execute skills deterministically from the dataset
+    from skills.base.skill_sdk import SkillPlan
+    from strategies.loader import load_skill
+    from tools.providers import StockBasic
+
+    stock_dicts = dataset.stocks()
+    stocks = [
+        StockBasic(
+            ts_code=s.get("ts_code", ""),
+            name=s.get("name", s.get("ts_code", "")),
+            industry=s.get("industry", ""),
+            market=s.get("market", ""),
+            list_date=s.get("list_date", ""),
+        )
+        for s in stock_dicts
+    ]
+    results: dict[str, Any] = {}
+    for skill_name in ("fundamental-analysis", "valuation-analysis", "risk-analysis"):
+        skill = load_skill(skill_name)
+        ctx = {"stocks": stocks, "dataset": dataset}
+        output = await skill.execute(ctx, SkillPlan())
+        results[skill_name] = output
+        print(f"  [{skill_name}] score={output.score:.3f} "
+              f"conf={output.confidence:.2f}")
+
+    # 3. Rebuild report
+
+    market_overview = f"重放 {len(stocks)} 只股票（来自 {run_dir.name} 快照）"
+    report_md = (
+        f"# 🔁 回放报告（Replay）\n\n"
+        f"**来源运行:** {run_dir.name}\n\n"
+        f"## 数据快照\n{market_overview}\n\n"
+    )
+    for skill_name, output in results.items():
+        report_md += f"### {skill_name}\n- 评分: {output.score:.3f}\n"
+        if output.reasoning:
+            report_md += f"- 说明: {output.reasoning[:200]}\n"
+        report_md += "\n"
+
+    out = run_dir / "replay_report.md"
+    out.write_text(report_md, encoding="utf-8")
+    print(f"\n✅ 重放完成 → {out}")
 
 
 def _plan_to_dict(plan: Any) -> dict:

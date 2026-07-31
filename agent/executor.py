@@ -1,21 +1,21 @@
 # Agent Executor — Bridges Planner's AnalysisPlan with Scheduler + Skills
 #
-# Converts AnalysisPlan to TaskGraph, registers skills, and passes
-# MarketDataProvider to all skills through shared state.
-# Data flows through DataSnapshot wrappers so every run is auditable
-# and replayable (as_of, source, query_params, data_hash, version).
+# Provider isolation:
+#   DataCollector (exclusive provider access) → ResearchDataset → Skills
+#
+# Skills NEVER call a provider. They consume the immutable ResearchDataset
+# injected into their context. This guarantees reproducibility and replay.
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
+from agent.data_collector import DataCollector
 from runtime.graph import build_graph
 from runtime.models import GraphResult, RuntimeConfig, TaskGraph
 from runtime.run_recorder import RunRecorder
 from runtime.scheduler import Scheduler
-from runtime.snapshot import DataSnapshot
-from runtime.tracing.agent_trace import TraceRecord
+from runtime.snapshot import ResearchDataset
 from strategies.base.models import AnalysisPlan
 from strategies.loader import load_skill
 from tools.providers import MarketDataProvider
@@ -24,12 +24,12 @@ from tools.providers import MarketDataProvider
 class SkillMap:
     """Maps skill names to SkillLifecycle instances."""
 
-    def __init__(self, provider: MarketDataProvider):
+    def __init__(self):
         self._map: dict[str, Any] = {
             "data-collector": None,
-            "fundamental-analysis": load_skill("fundamental-analysis", provider=provider),
-            "valuation-analysis": load_skill("valuation-analysis", provider=provider),
-            "risk-analysis": load_skill("risk-analysis", provider=provider),
+            "fundamental-analysis": load_skill("fundamental-analysis"),
+            "valuation-analysis": load_skill("valuation-analysis"),
+            "risk-analysis": load_skill("risk-analysis"),
             "portfolio-selection": None,
             "verifier": None,
             "report-generator": None,
@@ -43,10 +43,7 @@ class Executor:
     """Carries out the analysis plan via the DAG Scheduler.
 
     Data access pattern:
-      data-collector → MarketDataProvider → DataSnapshot → skill context
-
-    Every snapshot is recorded for the run output. Skill inputs are
-    derived from the snapshot so Skills never read uncontrolled data.
+      DataCollector → ResearchDataset → skill context
     """
 
     def __init__(
@@ -58,27 +55,22 @@ class Executor:
         run_id: str = "",
     ):
         self.provider = provider
-        self.skills = SkillMap(provider)
+        self.skills = SkillMap()
         self.event_bus = event_bus
         self.config = config
         self.recorder = recorder
         self.run_id = run_id
+        self.collector = DataCollector(provider, recorder, run_id)
         self.scheduler: Scheduler | None = None
         self._last_graph_result: GraphResult | None = None
         self._stocks: list = []
-        self._snapshots: list[DataSnapshot] = []
-        self._trace_records: list[TraceRecord] = []
+        self._dataset: ResearchDataset | None = None
         self._requested_codes: list[str] = []
 
     # ─── Execution ─────────────────────────────────────────────────────
 
     async def execute_plan(self, plan: AnalysisPlan) -> dict:
-        """Execute an AnalysisPlan using the Scheduler.
-
-        Extracts requested stock codes from the plan's data step so the
-        data-collector can filter the universe even when the Scheduler
-        passes an empty graph state (first node has no upstream input).
-        """
+        """Execute an AnalysisPlan using the Scheduler."""
         for step in plan.analysis_steps:
             if step.skill == "data-collector":
                 self._requested_codes = list(step.params.get("stock_codes") or [])
@@ -108,11 +100,8 @@ class Executor:
             if skill is None:
                 return {"note": f"skill '{node.skill}' not implemented as skill", "input": input_data}
             ctx = dict(input_data)
-            ctx["stocks"] = self._stocks
-            ctx["provider"] = self.provider
-            # Attach latest snapshot metadata so skills can validate as_of
-            if self._snapshots:
-                ctx["snapshot"] = self._snapshots[-1]
+            ctx["stocks"] = self._stock_objects()
+            ctx["dataset"] = self._dataset  # Skills consume snapshots only
             from skills.base.skill_sdk import SkillPlan
             return await skill.execute(ctx, SkillPlan())
 
@@ -139,88 +128,30 @@ class Executor:
             for node_id, node_result in result.node_results.items()
         }
 
-    # ─── Data Collection (snapshot-backed) ─────────────────────────────
+    # ─── Data Collection (delegated to DataCollector) ──────────────────
 
     async def _run_data_collector(self, input_data: dict) -> dict:
-        """Load stock universe from provider and wrap it in a DataSnapshot.
-
-        Honors explicit ts_code requests (single-stock analysis) by
-        filtering the provider's universe to the requested codes.
-        """
-        start = datetime.now()
+        """Collect all data layers via DataCollector → ResearchDataset."""
         requested = list(input_data.get("stock_codes") or []) or self._requested_codes
+        start_date = str(input_data.get("start_date", "20240101"))
+        end_date = str(input_data.get("end_date", "20251231"))
 
-        try:
-            # Single-stock: pass ts_codes so the provider filters server-side
-            # (one rate-limited call instead of a full universe scan).
-            if requested and hasattr(self.provider, "get_stock_basic"):
-                stocks = await self.provider.get_stock_basic(ts_codes=requested)
-            else:
-                stocks = await self.provider.get_stock_basic()
-        except Exception as e:
-            # Explicit single-stock request: degrade gracefully — we can
-            # still analyse real prices/valuation without the universe table.
-            if requested:
-                from tools.providers import StockBasic
-
-                stocks = [
-                    StockBasic(ts_code=code, name=code, industry="")
-                    for code in requested
-                ]
-                self._trace_records.append(TraceRecord.make(
-                    run_id=self.run_id,
-                    step_id="data-collector",
-                    kind="tool",
-                    name="get_stock_basic",
-                    input_data={"stock_codes": requested},
-                    output_data={"note": f"degraded (universe unavailable): {e}"},
-                    status="error",
-                    error=str(e)[:200],
-                ))
-            else:
-                # Fail loudly: a data source failure must not produce an
-                # empty "no candidates" report.
-                from runtime.errors import FatalError
-
-                raise FatalError(
-                    f"Data collection failed (provider={self.provider.__class__.__name__}): {e}"
-                ) from e
-
-        if requested:
-            requested_set = set(requested)
-            stocks = [s for s in stocks if s.ts_code in requested_set]
-
-        # Build a point-in-time snapshot
-        as_of = input_data.get("end_date", "20251231")
-        snapshot = DataSnapshot.from_rows(
-            rows=stocks,
-            source=self.provider.__class__.__name__,
-            query_params={"stock_codes": requested or None},
-            as_of=as_of,
-            publish_date=datetime.now().strftime("%Y-%m-%d"),
+        dataset = await self.collector.collect(
+            stock_codes=requested or None,
+            start_date=start_date,
+            end_date=end_date,
         )
-        self._snapshots.append(snapshot)
-
-        # Record tool trace
-        self._trace_records.append(TraceRecord.make(
-            run_id=self.run_id,
-            step_id="data-collector",
-            kind="tool",
-            name="get_stock_basic",
-            input_data={"stock_codes": requested or None},
-            output_data=snapshot.to_dict(),
-            duration_ms=int((datetime.now() - start).total_seconds() * 1000),
-        ))
-
-        self._stocks = stocks
+        self._dataset = dataset
+        self._stocks = dataset.stocks()
         return {
-            "stock_count": len(stocks),
-            "stocks": stocks,
+            "stock_count": len(self._stocks),
+            "stocks": self._stocks,
             "stocks_basic": [
-                {"ts_code": s.ts_code, "name": s.name, "industry": s.industry}
-                for s in stocks
+                {"ts_code": s["ts_code"], "name": s.get("name", s["ts_code"]),
+                 "industry": s.get("industry", "")}
+                for s in self._stocks
             ],
-            "snapshot": snapshot.to_dict(),
+            "dataset": dataset.to_dict(),
         }
 
     # ─── Plan → Graph ──────────────────────────────────────────────────
@@ -258,16 +189,38 @@ class Executor:
     # ─── Run artifact accessors ────────────────────────────────────────
 
     def snapshot_records(self) -> list[dict]:
-        """Serialized snapshots for the data_snapshot.json artifact."""
-        return [s.to_dict() for s in self._snapshots]
+        """Serialized dataset slices for data_snapshot.json."""
+        if self._dataset:
+            return [s.to_dict() for s in self._dataset.slices]
+        return []
 
     def trace_records(self) -> list[dict]:
-        """Serialized trace records for tool_trace.jsonl."""
-        return [r.to_jsonl() for r in self._trace_records]
+        """Serialized trace records (collector + executor) for tool_trace.jsonl."""
+        records = [r.to_jsonl() for r in self.collector.trace_records]
+        return records
 
     def get_graph_result(self) -> GraphResult | None:
         return self._last_graph_result
 
+    def _stock_objects(self) -> list:
+        """Convert dataset stock dicts to StockBasic objects for skills."""
+        from tools.providers import StockBasic
+
+        return [
+            StockBasic(
+                ts_code=s.get("ts_code", ""),
+                name=s.get("name", s.get("ts_code", "")),
+                industry=s.get("industry", ""),
+                market=s.get("market", ""),
+                list_date=s.get("list_date", ""),
+            )
+            for s in self._stocks
+        ]
+
     @property
     def stocks(self) -> list:
         return self._stocks
+
+    @property
+    def dataset(self) -> ResearchDataset | None:
+        return self._dataset

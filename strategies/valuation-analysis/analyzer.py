@@ -62,7 +62,7 @@ class ValuationAnalysisSkill(SkillLifecycle):
 
     async def execute(self, context: dict, plan: SkillPlan) -> SkillOutput:
         stocks: list[StockBasic] = context.get("stocks", [])
-        provider = context.get("provider")
+        dataset = context.get("dataset")
         if not stocks:
             return SkillOutput(score=0.5, confidence=0.0, data={"error": "no stocks"})
 
@@ -70,11 +70,11 @@ class ValuationAnalysisSkill(SkillLifecycle):
         real_count = 0
         for s in stocks:
             pe, pb = _infer_pe_pb(s)
-            # Use real PE/PB from provider when available
-            if provider is not None and hasattr(provider, "get_valuation"):
+            # Read real PE/PB from the snapshot (never from a provider)
+            if dataset is not None:
                 try:
-                    val = await provider.get_valuation(s.ts_code)
-                    if val and val.get("pe"):
+                    val = dataset.valuation(s.ts_code) or {}
+                    if val.get("pe"):
                         pe = val["pe"]
                         pb = val["pb"]
                         real_count += 1

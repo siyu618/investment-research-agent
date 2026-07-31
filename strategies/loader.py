@@ -1,7 +1,13 @@
 # Strategy module loader — handles hyphenated directory names
 # Python cannot import "fundamental-analysis" directly, so we use importlib.
 
+from __future__ import annotations
+
 import importlib
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from skills.base.skill_sdk import SkillLifecycle
 
 _LOADED: dict[str, object] = {}
 
@@ -22,7 +28,7 @@ SKILL_CLASSES: dict[str, str] = {
 }
 
 
-def load_skill(skill_name: str, **kwargs) -> object:
+def load_skill(skill_name: str, **kwargs) -> SkillLifecycle:
     """Load a skill class by name, instantiating with given kwargs."""
     module_path = SKILL_MODULES.get(skill_name)
     class_name = SKILL_CLASSES.get(skill_name)
