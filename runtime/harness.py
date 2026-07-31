@@ -148,21 +148,35 @@ class Harness:
             return result
 
         except FatalError as e:
-            duration = int((datetime.now() - start_time).total_seconds() * 1000)
-            self._emit(EventType.WORKFLOW_FINISHED, {
-                "status": "failed",
-                "error": str(e),
-                "total_duration_ms": duration,
-            })
-            result = AgentResult(
-                session_id=session_id,
-                success=False,
-                total_duration_ms=duration,
-                error=str(e),
-            )
-            await self._drain_hooks()
-            await self._fire_on_finish(context, result, e)
-            return result
+            return await self._fail(session_id, start_time, context, e)
+        except TimeoutError as e:
+            # Step timeout after retries: treat as a hard failure, not
+            # a silent success with empty results.
+            return await self._fail(session_id, start_time, context, e)
+
+    async def _fail(
+        self,
+        session_id: str,
+        start_time: datetime,
+        context: ExecutionContext,
+        e: Exception,
+    ) -> AgentResult:
+        """Record a failed run (shared by FatalError and TimeoutError paths)."""
+        duration = int((datetime.now() - start_time).total_seconds() * 1000)
+        self._emit(EventType.WORKFLOW_FINISHED, {
+            "status": "failed",
+            "error": str(e),
+            "total_duration_ms": duration,
+        })
+        result = AgentResult(
+            session_id=session_id,
+            success=False,
+            total_duration_ms=duration,
+            error=str(e),
+        )
+        await self._drain_hooks()
+        await self._fire_on_finish(context, result, e)
+        return result
 
     async def _run_step(
         self, step_name: str, step_fn: Callable, context: ExecutionContext,

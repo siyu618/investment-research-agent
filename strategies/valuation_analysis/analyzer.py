@@ -62,12 +62,24 @@ class ValuationAnalysisSkill(SkillLifecycle):
 
     async def execute(self, context: dict, plan: SkillPlan) -> SkillOutput:
         stocks: list[StockBasic] = context.get("stocks", [])
+        provider = context.get("provider")
         if not stocks:
             return SkillOutput(score=0.5, confidence=0.0, data={"error": "no stocks"})
 
         profiles = []
+        real_count = 0
         for s in stocks:
             pe, pb = _infer_pe_pb(s)
+            # Use real PE/PB from provider when available
+            if provider is not None and hasattr(provider, "get_valuation"):
+                try:
+                    val = await provider.get_valuation(s.ts_code)
+                    if val and val.get("pe"):
+                        pe = val["pe"]
+                        pb = val["pb"]
+                        real_count += 1
+                except Exception:
+                    pass  # fall back to inferred
             profiles.append(ValuationProfile(
                 ts_code=s.ts_code, name=s.name, industry=s.industry,
                 pe_ttm=pe, pb=pb,
@@ -91,7 +103,10 @@ class ValuationAnalysisSkill(SkillLifecycle):
             score=round(avg_score, 4),
             confidence=0.7,
             data={"profiles": [p.__dict__ for p in profiles], "stock_count": len(profiles)},
-            reasoning=f"Valuation percentile scoring for {len(profiles)} stocks",
+            reasoning=(
+                f"Valuation percentile scoring for {len(profiles)} stocks "
+                f"({real_count} using real PE/PB)"
+            ),
         )
 
     async def verify(self, context, output) -> SkillVerdict:

@@ -148,8 +148,15 @@ class Executor:
         filtering the provider's universe to the requested codes.
         """
         start = datetime.now()
+        requested = list(input_data.get("stock_codes") or []) or self._requested_codes
+
         try:
-            stocks = await self.provider.get_stock_basic()
+            # Single-stock: pass ts_codes so the provider filters server-side
+            # (one rate-limited call instead of a full universe scan).
+            if requested and hasattr(self.provider, "get_stock_basic"):
+                stocks = await self.provider.get_stock_basic(ts_codes=requested)
+            else:
+                stocks = await self.provider.get_stock_basic()
         except Exception as e:
             # Fail loudly: a data source failure must not produce an
             # empty "no candidates" report.
@@ -159,7 +166,6 @@ class Executor:
                 f"Data collection failed (provider={self.provider.__class__.__name__}): {e}"
             ) from e
 
-        requested = list(input_data.get("stock_codes") or []) or self._requested_codes
         if requested:
             requested_set = set(requested)
             stocks = [s for s in stocks if s.ts_code in requested_set]

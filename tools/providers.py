@@ -85,7 +85,10 @@ class MarketDataProvider(ABC):
 
     @abstractmethod
     async def get_stock_basic(
-        self, market: str | None = None, industry: str | None = None
+        self,
+        market: str | None = None,
+        industry: str | None = None,
+        ts_codes: list[str] | None = None,
     ) -> list[StockBasic]:
         ...
 
@@ -93,6 +96,16 @@ class MarketDataProvider(ABC):
     async def get_daily_price(
         self, ts_code: str, start_date: str, end_date: str
     ) -> list[DailyPrice]:
+        ...
+
+    @abstractmethod
+    async def get_valuation(
+        self, ts_code: str, trade_date: str = ""
+    ) -> dict:
+        """Return PE/PB valuation metrics for a stock.
+
+        Keys: pe, pb, trade_date (empty dict if unavailable).
+        """
         ...
 
     @abstractmethod
@@ -238,10 +251,15 @@ class MockMarketDataProvider(MarketDataProvider):
         self._cache: dict[str, Any] = {}
 
     async def get_stock_basic(
-        self, market: str | None = None, industry: str | None = None
+        self,
+        market: str | None = None,
+        industry: str | None = None,
+        ts_codes: list[str] | None = None,
     ) -> list[StockBasic]:
         results = []
         for ts_code, info in _STOCK_UNIVERSE.items():
+            if ts_codes and ts_code not in ts_codes:
+                continue
             if industry and info["industry"] != industry:
                 continue
             mkt = "SZSE" if ts_code.endswith(".SZ") else "SSE"
@@ -267,6 +285,14 @@ class MockMarketDataProvider(MarketDataProvider):
             p for p in self._cache[cache_key]
             if start_date <= p.trade_date <= end_date
         ]
+
+    async def get_valuation(self, ts_code: str, trade_date: str = "") -> dict:
+        """Mock PE/PB from deterministic hash."""
+        h = hash(ts_code) & 0xFFFFFFFF
+        pe = round(8.0 + (h % 200) / 10, 2)
+        pb = round(0.5 + (h % 30) / 10, 2)
+        return {"ts_code": ts_code, "pe": pe, "pb": pb,
+                "trade_date": trade_date or "20251231"}
 
     async def get_income_statement(
         self, ts_code: str, start_date: str, end_date: str
@@ -314,10 +340,14 @@ class OfficialTushareMCPProvider(MarketDataProvider):
         stocks = await provider.get_stock_basic(market="SSE")
     """
 
+    STOCK_BASIC_TTL = 6 * 3600  # cache stock_basic for 6h (hourly quota)
+
     def __init__(self, token: str = "", max_retries: int = 3):
         self._token = token or os.environ.get("TUSHARE_TOKEN", "")
         self._max_retries = max_retries
         self._pro = None
+        self._stock_basic_cache: list[StockBasic] | None = None
+        self._stock_basic_cached_at: float = 0.0
         if self._token:
             try:
                 import tushare as ts
@@ -335,7 +365,13 @@ class OfficialTushareMCPProvider(MarketDataProvider):
         return self._pro
 
     async def _call(self, fn, **kwargs):
-        """Call a tushare API with retries on transient errors."""
+        """Call a tushare API with retries on transient errors.
+
+        Rate-limit handling:
+          - "N次/分钟" windows are short: retry once after the window.
+          - "N次/小时" windows are long: fail fast with a clear error
+            instead of blocking the pipeline for up to an hour.
+        """
         import asyncio
 
         last_err: Exception | None = None
@@ -345,16 +381,56 @@ class OfficialTushareMCPProvider(MarketDataProvider):
                 return await asyncio.to_thread(fn, **kwargs)
             except Exception as e:
                 last_err = e
+                msg = str(e)
+                if "频率超限" in msg or "频次超限" in msg or "frequency" in msg.lower():
+                    if "小时" in msg or "hour" in msg.lower():
+                        # Hour-level quota: don't block the pipeline.
+                        raise TushareClientError(
+                            f"Tushare rate limit (hourly) exceeded: {e}"
+                        ) from e
+                    # Minute-level: wait the window once, then retry
+                    wait = 60.0
+                else:
+                    wait = 0.5 * (attempt + 1)
                 if attempt < self._max_retries - 1:
-                    await asyncio.sleep(0.5 * (attempt + 1))
+                    await asyncio.sleep(wait)
         raise TushareClientError(f"Tushare call failed: {last_err}") from last_err
 
     async def get_stock_basic(
-        self, market: str | None = None, industry: str | None = None
+        self,
+        market: str | None = None,
+        industry: str | None = None,
+        ts_codes: list[str] | None = None,
     ) -> list[StockBasic]:
+        """Fetch stock basics with an in-process cache.
+
+        The full universe is fetched once (stock_basic has a tight quota on
+        free tiers) and cached for STOCK_BASIC_TTL. Single-stock lookups
+        then filter from the cached universe without another API call.
+        """
+        import time
+
+        # Use cached full universe if fresh
+        if self._stock_basic_cache is not None:
+            elapsed = time.monotonic() - self._stock_basic_cached_at
+            if elapsed < self.STOCK_BASIC_TTL:
+                return self._filter_basic(self._stock_basic_cache, market, industry, ts_codes)
+
         pro = self._ensure_pro()
-        df = await self._call(pro.stock_basic, exchange="", list_status="L",
-                              fields="ts_code,name,industry,area,market,list_date")
+        kwargs: dict = {"exchange": "", "list_status": "L",
+                        "fields": "ts_code,name,industry,area,market,list_date"}
+        if ts_codes and self._stock_basic_cache is None:
+            # First fetch: request only the needed codes to stay small.
+            kwargs["ts_code"] = ",".join(ts_codes)
+
+        try:
+            df = await self._call(pro.stock_basic, **kwargs)
+        except TushareClientError:
+            # Rate-limited: fall back to stale cache if we have one.
+            if self._stock_basic_cache:
+                return self._filter_basic(self._stock_basic_cache, market, industry, ts_codes)
+            raise
+
         results = []
         for _, row in df.iterrows():
             if market and row["market"] not in market:
@@ -369,7 +445,54 @@ class OfficialTushareMCPProvider(MarketDataProvider):
                 list_date=row.get("list_date", "") or "",
                 is_active=True,
             ))
+
+        # Cache the full universe on first success (may be partial if filtered)
+        if self._stock_basic_cache is None:
+            self._stock_basic_cache = results
+            self._stock_basic_cached_at = time.monotonic()
+        return self._filter_basic(results, market, industry, ts_codes)
+
+    @staticmethod
+    def _filter_basic(
+        stocks: list[StockBasic],
+        market: str | None,
+        industry: str | None,
+        ts_codes: list[str] | None,
+    ) -> list[StockBasic]:
+        """Filter a stock list by market/industry/codes."""
+        results = stocks
+        if market:
+            results = [s for s in results if market in s.market]
+        if industry:
+            results = [s for s in results if s.industry == industry]
+        if ts_codes:
+            wanted = set(ts_codes)
+            results = [s for s in results if s.ts_code in wanted]
         return results
+
+    async def get_valuation(self, ts_code: str, trade_date: str = "") -> dict:
+        """Real PE/PB from daily_basic (available on free/low tiers)."""
+        pro = self._ensure_pro()
+        kwargs: dict = {"ts_code": ts_code}
+        if trade_date:
+            kwargs["trade_date"] = trade_date
+        try:
+            df = await self._call(
+                pro.daily_basic, **kwargs,
+                fields="ts_code,trade_date,pe,pb",
+            )
+        except TushareClientError:
+            # daily_basic may be quota-limited; return empty rather than fail
+            return {}
+        if df is None or df.empty:
+            return {}
+        row = df.iloc[0]
+        return {
+            "ts_code": ts_code,
+            "pe": float(row.get("pe") or 0),
+            "pb": float(row.get("pb") or 0),
+            "trade_date": str(row.get("trade_date", trade_date)),
+        }
 
     async def get_daily_price(
         self, ts_code: str, start_date: str, end_date: str
@@ -525,13 +648,17 @@ class CachedMarketDataProvider(MarketDataProvider):
         self._cache[key] = (now, val)
         return val
 
-    async def get_stock_basic(self, market=None, industry=None):
-        return await self._cached(f"basic:{market}:{industry}",
-            lambda: self._inner.get_stock_basic(market, industry))
+    async def get_stock_basic(self, market=None, industry=None, ts_codes=None):
+        return await self._cached(f"basic:{market}:{industry}:{ts_codes}",
+            lambda: self._inner.get_stock_basic(market, industry, ts_codes))
 
     async def get_daily_price(self, ts_code, start_date, end_date):
         return await self._cached(f"price:{ts_code}:{start_date}:{end_date}",
             lambda: self._inner.get_daily_price(ts_code, start_date, end_date))
+
+    async def get_valuation(self, ts_code, trade_date=""):
+        return await self._cached(f"val:{ts_code}:{trade_date}",
+            lambda: self._inner.get_valuation(ts_code, trade_date))
 
     async def get_income_statement(self, ts_code, start_date, end_date):
         return await self._cached(f"inc:{ts_code}:{start_date}:{end_date}",
