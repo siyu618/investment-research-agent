@@ -145,8 +145,8 @@ class Planner:
             risk_level = RiskLevel.MEDIUM
 
         # --- Explicit stock codes (e.g. "分析 600519.SH") ---
-        stock_codes = re.findall(r"\b(\d{6}\.(SH|SZ|BJ))\b", req_orig, re.IGNORECASE)
-        stock_codes = [f"{code}.{suffix.upper()}" for code, suffix in stock_codes]
+        matches = re.findall(r"\b(\d{6})\.(SH|SZ|BJ)\b", req_orig, re.IGNORECASE)
+        stock_codes = [f"{code}.{suffix.upper()}" for code, suffix in matches]
         if stock_codes:
             stock_pool = "single"  # override universe
 

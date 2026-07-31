@@ -14,6 +14,7 @@ import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -136,9 +137,7 @@ async def run_research(requirement: str, args):
                   f"综合评分 {getattr(top, 'composite_score', 0):.2f}")
 
     # Record full run artifacts (audit/replay support)
-    plan_dict = {}
-    if hasattr(result, "output") and result.output:
-        plan_dict = {"report_id": getattr(result.output, "report_id", "")}
+    plan_dict = _plan_to_dict(harness.last_plan)
     recorder.save_full_run(
         run_id=run_id,
         request={"requirement": requirement, "provider": args.provider},
@@ -160,6 +159,20 @@ async def run_research(requirement: str, args):
     # Hook error count
     if harness.hook_error_count > 0:
         print(f"\n⚠ {harness.hook_error_count} hook error(s)")
+
+
+def _plan_to_dict(plan: Any) -> dict:
+    """Serialize an AnalysisPlan into a JSON-friendly dict."""
+    if plan is None:
+        return {}
+    from dataclasses import asdict
+
+    try:
+        d = asdict(plan)
+        # analysis_steps contains dataclasses; asdict handles them
+        return d
+    except Exception:
+        return {"note": str(plan)}
 
 
 if __name__ == "__main__":

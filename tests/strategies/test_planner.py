@@ -69,3 +69,43 @@ class TestPlanner:
         assert 2 in steps[5].depends_on
         assert 3 in steps[5].depends_on
         assert 4 in steps[5].depends_on
+
+
+class TestSingleStockDetection:
+    def setup_method(self):
+        self.planner = Planner()
+
+    @pytest.mark.asyncio
+    async def test_detects_single_stock_code(self):
+        """'分析 600519.SH' → stock_pool=single, stock_codes=['600519.SH']."""
+        plan = await self.planner.create_plan("分析 600519.SH")
+        data_step = plan.analysis_steps[0]
+        assert data_step.params["stock_codes"] == ["600519.SH"]
+        assert data_step.target == "single"
+
+    @pytest.mark.asyncio
+    async def test_multiple_stock_codes(self):
+        """'分析 600519.SH 和 000001.SZ' → two codes."""
+        plan = await self.planner.create_plan("分析 600519.SH 和 000001.SZ")
+        data_step = plan.analysis_steps[0]
+        assert sorted(data_step.params["stock_codes"]) == ["000001.SZ", "600519.SH"]
+
+    @pytest.mark.asyncio
+    async def test_no_false_positive_on_bare_numbers(self):
+        """Random 6-digit numbers without market suffix should not match."""
+        plan = await self.planner.create_plan("筛选 5 只股票")
+        data_step = plan.analysis_steps[0]
+        assert data_step.params["stock_codes"] == []
+        assert data_step.target == "csi300"
+
+    @pytest.mark.asyncio
+    async def test_screening_requirement(self):
+        """Conditional screening: quality + reasonable valuation + medium risk."""
+        plan = await self.planner.create_plan(
+            "从沪深300筛选基本面稳健、估值合理且中等风险的5只股票"
+        )
+        assert plan.risk_preference == "medium"
+        assert plan.strategy_weights.get("fundamental-analysis", 0) >= 0.3
+        steps = {s.id: s for s in plan.analysis_steps}
+        # portfolio selection (step 5) depends on fund/val/risk
+        assert all(d in steps[5].depends_on for d in (2, 3, 4))

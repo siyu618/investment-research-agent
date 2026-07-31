@@ -59,6 +59,7 @@ class Harness:
         self._correlation_id = ""
         self._pending_hook_tasks: list[asyncio.Task] = []
         self.hook_error_count: int = 0
+        self.last_plan: Any = None
 
     def add_hook(self, hook: LifecycleHook) -> None:
         """Register a lifecycle hook."""
@@ -94,6 +95,7 @@ class Harness:
                 lambda: planner.create_plan(requirement, **kwargs),
                 context,
             )
+            self.last_plan = plan
             self._emit(EventType.PLANNING_COMPLETED, {"plan": str(type(plan))})
 
             # Step 2: Execute
