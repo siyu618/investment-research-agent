@@ -158,13 +158,33 @@ class Executor:
             else:
                 stocks = await self.provider.get_stock_basic()
         except Exception as e:
-            # Fail loudly: a data source failure must not produce an
-            # empty "no candidates" report.
-            from runtime.errors import FatalError
+            # Explicit single-stock request: degrade gracefully — we can
+            # still analyse real prices/valuation without the universe table.
+            if requested:
+                from tools.providers import StockBasic
 
-            raise FatalError(
-                f"Data collection failed (provider={self.provider.__class__.__name__}): {e}"
-            ) from e
+                stocks = [
+                    StockBasic(ts_code=code, name=code, industry="")
+                    for code in requested
+                ]
+                self._trace_records.append(TraceRecord.make(
+                    run_id=self.run_id,
+                    step_id="data-collector",
+                    kind="tool",
+                    name="get_stock_basic",
+                    input_data={"stock_codes": requested},
+                    output_data={"note": f"degraded (universe unavailable): {e}"},
+                    status="error",
+                    error=str(e)[:200],
+                ))
+            else:
+                # Fail loudly: a data source failure must not produce an
+                # empty "no candidates" report.
+                from runtime.errors import FatalError
+
+                raise FatalError(
+                    f"Data collection failed (provider={self.provider.__class__.__name__}): {e}"
+                ) from e
 
         if requested:
             requested_set = set(requested)
