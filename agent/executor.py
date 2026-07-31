@@ -123,6 +123,17 @@ class Executor:
         )
 
         self._last_graph_result = result
+
+        # Fail loudly if the data-collector step failed — an empty
+        # universe would otherwise produce a misleading "no candidates" report.
+        for node_id, node_result in result.node_results.items():
+            if node_id == "step-1" and not node_result.success:
+                from runtime.errors import FatalError
+
+                raise FatalError(
+                    f"Data collection step failed: {node_result.error}"
+                )
+
         return {
             node_id: node_result.output or {}
             for node_id, node_result in result.node_results.items()
@@ -137,7 +148,16 @@ class Executor:
         filtering the provider's universe to the requested codes.
         """
         start = datetime.now()
-        stocks = await self.provider.get_stock_basic()
+        try:
+            stocks = await self.provider.get_stock_basic()
+        except Exception as e:
+            # Fail loudly: a data source failure must not produce an
+            # empty "no candidates" report.
+            from runtime.errors import FatalError
+
+            raise FatalError(
+                f"Data collection failed (provider={self.provider.__class__.__name__}): {e}"
+            ) from e
 
         requested = list(input_data.get("stock_codes") or []) or self._requested_codes
         if requested:
