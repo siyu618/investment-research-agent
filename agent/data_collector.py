@@ -228,7 +228,7 @@ class DataCollector:
                     val = await self._provider.get_valuation(s.ts_code, trade_date=as_of or "")
                     val = val or {}
                     # PIT: future valuation (trade_date > as_of) must not enter
-                    vdate = val.get("trade_date", "")
+                    vdate = _as_of_iso(val.get("trade_date", ""))
                     if as_of_iso and vdate and vdate > as_of_iso:
                         span.set_output({"filtered": "future_valuation",
                                          "trade_date": vdate, "as_of": as_of_iso})

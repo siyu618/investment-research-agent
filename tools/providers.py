@@ -406,12 +406,18 @@ class MockMarketDataProvider(MarketDataProvider):
         ]
 
     async def get_valuation(self, ts_code: str, trade_date: str = "") -> dict:
-        """Mock PE/PB from stable sha256 seed (cross-process deterministic)."""
+        """Mock PE/PB from stable sha256 seed (cross-process deterministic).
+
+        Returns valuation as of the mock's latest trading day (20251231),
+        independent of the requested trade_date — mirroring a real provider
+        that returns its latest snapshot. DataCollector enforces PIT by
+        filtering if this trade_date exceeds the analysis as_of.
+        """
         h = _stable_seed(ts_code, "valuation")
         pe = round(8.0 + (h % 2000) / 100, 2)
         pb = round(0.5 + (h % 300) / 100, 2)
         return {"ts_code": ts_code, "pe": pe, "pb": pb,
-                "trade_date": trade_date or "20251231"}
+                "trade_date": "20251231"}
 
     async def get_income_statement(
         self, ts_code: str, start_date: str, end_date: str
@@ -447,15 +453,18 @@ class TushareClientError(Exception):
     """Raised when Tushare API returns an error."""
 
 
-class OfficialTushareMCPProvider(MarketDataProvider):
-    """Real Tushare data provider.
+class TushareSdkProvider(MarketDataProvider):
+    """Real Tushare data provider via the official Python SDK.
 
     Uses the `tushare` package (pro_api). Requires TUSHARE_TOKEN.
     Fetches stock basics, daily prices, and financial statements,
     mapping them to the unified MarketDataProvider schema.
 
+    Note: this is the SDK-backed provider. A future MCP client should use
+    `TushareMCPProvider`.
+
     Usage:
-        provider = OfficialTushareMCPProvider(token="...")
+        provider = TushareSdkProvider(token="...")
         stocks = await provider.get_stock_basic(market="SSE")
     """
 
@@ -737,6 +746,20 @@ class OfficialTushareMCPProvider(MarketDataProvider):
                 operating_profit=float(row.get("operate_profit", 0) or 0),
             ))
         return results
+
+
+# ─── Deprecated alias ─────────────────────────────────────────────────────
+# Old name for the SDK-backed provider. Use TushareSdkProvider going
+# forward; a future MCP-client provider will be TushareMCPProvider.
+def OfficialTushareMCPProvider(*args, **kwargs):  # noqa: N802 (legacy name)
+    import warnings
+
+    warnings.warn(
+        "OfficialTushareMCPProvider is deprecated; use TushareSdkProvider",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return TushareSdkProvider(*args, **kwargs)
 
 
 def _report_type(rt: str) -> str:

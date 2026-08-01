@@ -78,8 +78,8 @@ async def run_research(requirement: str, args):
 
     # Provider
     if args.provider == "tushare":
-        from tools.providers import OfficialTushareMCPProvider
-        provider: MarketDataProvider = OfficialTushareMCPProvider()
+        from tools.providers import TushareSdkProvider
+        provider: MarketDataProvider = TushareSdkProvider()
     else:
         provider = MockMarketDataProvider()
 

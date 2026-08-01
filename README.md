@@ -26,19 +26,21 @@ export TUSHARE_TOKEN=your_token_here
 python -m agent --requirement "分析 600519.SH" --provider tushare
 ```
 
-每次运行会在 `runs/{run_id}/` 生成完整的审计记录（10 个文件）：
+每次正常运行会生成 **12 个 Artifact**；Replay 额外生成 `replay_verification.json`：
 
 ```
-request.json          原始需求
-plan.json             结构化计划（objective/weights/steps）
-tool_trace.jsonl      工具调用级 trace（输入/输出 hash、耗时、重试）
-agent_trace.jsonl     统一生命周期 trace（planner→tools→skills→verifier）
-data_snapshot.json    完整 point-in-time 数据快照（可重放，含 content_hash + snapshot_hash）
-execution_outputs.json 每个 DAG 节点的标准化输出 + hash（Replay 逐节点比较）
-verification.json     校验结果（severity + policy mode）
-execution_graph.mmd   Mermaid 执行流程图
-report.md             最终 Markdown 报告
-meta.json             运行元信息（状态/耗时/事件数/错误）
+manifest.json            Artifact 清单（每个文件的 sha256 + schema version + 用途）
+request.json             原始需求
+plan.json                结构化计划（objective/weights/steps）
+tool_trace.jsonl         工具调用级 trace（输入/输出 hash、耗时、重试）
+agent_trace.jsonl        统一生命周期 trace（真实 span：planner→tools→skills→verifier→report）
+data_snapshot.json       完整 point-in-time 数据快照（含 content_hash + snapshot_hash）
+execution_outputs.json   每个 DAG 节点的标准化输出 + hash（Replay 逐节点比较）
+result_manifest.json     标准化业务结果（候选排序/评分、组合、Verification、报告内容 hash）
+verification.json        校验结果（severity + policy mode + blocked）
+execution_graph.mmd      Mermaid 执行流程图
+report.md                最终 Markdown 报告
+meta.json                运行元信息（状态/耗时/事件数/错误）
 ```
 
 **Hash 体系**：`content_hash` 只覆盖数据内容（跨环境稳定，供缓存）；`snapshot_hash` 覆盖内容 + as_of/publish_date/effective_date 等完整上下文（供 Replay 等价验证）。两者均已由测试验证。
@@ -56,13 +58,16 @@ python -m agent --replay "runs/$R"
 # 期望输出：状态 PASSED，Provider 访问尝试 0 次，快照/计划/节点 hash 全部一致
 ```
 
+**Artifact 完整性门禁**：Replay 启动前先校验 `manifest.json` 的 schema version、每个必需 Artifact 的文件 hash；若 `execution_outputs.json` 缺失、manifest 缺失/版本不支持、或任何文件 hash 不匹配（被篡改/损坏），直接返回 `artifact_missing` 失败并给出原因——绝不跳过比较或默认通过。
+
 Replay 期间通过 `ForbiddenProvider` 禁止任何外部数据访问（任何 Provider 调用立即抛错）。执行后逐项比较：
 - **snapshot_hash**（完整上下文，非 content_hash）
 - **plan_hash**
 - **每个真实 Skill 节点的 output_hash**（来自 `execution_outputs.json`，逐节点比较）
-- 候选数量、VerificationResult、报告结构
+- **result_manifest**：候选排序 + 综合评分（逐项）、VerificationResult、组合建议、报告内容 hash（结构化事实，非 Markdown 文本）
+- 报告章节结构（次要，辅助项）
 
-结果写入 `runs/{run_id}/replay_verification.json`；任何差异标记 `failed` 并输出详细 diff（含每个不匹配节点的期望/实际 hash 前缀）。
+**严格确定性 Replay**：只有在节点输出、候选排序、Verification、结构化报告内容与 Artifact Hash 全部通过自动比较后，才称为严格确定性 Replay（status=PASSED）。任何一项不匹配即 `failed`，输出详细 diff（含期望/实际 hash 前缀与差异节点）。结果写入 `runs/{run_id}/replay_verification.json`。
 
 ---
 
@@ -118,7 +123,7 @@ Replay 期间通过 `ForbiddenProvider` 禁止任何外部数据访问（任何 
 | **DataSnapshot** | 真正不可变快照（深层冻结为 tuple/只读 Mapping，防修改有测试）；完整 PIT 字段（as_of + 每条记录的 ann_date/trade_date）；DataCollector 按 as_of 过滤未来数据 |
 | **Replay** | `python -m agent --replay runs/{run_id}` 完整 DAG 重放（禁 Provider，等价性校验有测试） |
 | **Mock Provider** | sha256 稳定数据 + 真实交易日历 + growth/value/cyclical/abnormal 四画像 |
-| **Tushare Provider** | 真实实现；已验证 daily/daily_basic；权限/限频优雅降级 |
+| **Tushare Provider** | `TushareSdkProvider`（SDK 实现）；已验证 daily/daily_basic；权限/限频优雅降级 |
 | **基本面分析** | ROE、营收/利润增长、现金流质量、负债率、毛利率（含 provenance） |
 | **估值分析** | PE/PB 相对分位评分（真实 PE/PB 优先） |
 | **风险分析** | 年化波动率、最大回撤 |
@@ -126,7 +131,7 @@ Replay 期间通过 `ForbiddenProvider` 禁止任何外部数据访问（任何 
 | **Verifier** | severity(info/warning/error/fatal) + policy_mode(permissive/standard/strict)；未来函数→fatal 阻断 |
 | **报告生成** | 结构化 Markdown（表格 + 详细分析 + 免责声明） |
 | **受控 LLM** | 仅 NL→InvestmentRequest + 报告润色；不生成 DAG/不选工具/不计算 |
-| **RunRecorder** | 每次运行 10 个审计文件（含 agent_trace + execution_outputs + Mermaid 图） |
+| **RunRecorder** | 每次运行 12 个 Artifact（含 manifest + execution_outputs + result_manifest + Mermaid 图） |
 | **评估框架** | Agent 执行质量（agent-quality + trajectory）+ 实验性策略评估 |
 | **工程规范** | pyproject.toml、ruff、mypy、pre-commit、GitHub Actions CI |
 

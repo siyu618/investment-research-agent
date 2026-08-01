@@ -177,3 +177,72 @@ class TestFullReplay:
         snap = json.loads((pathlib.Path(run_dir_path) / "data_snapshot.json").read_text())
         dataset = ResearchDataset.from_dict(snap)
         assert len(dataset.stocks()) >= 1
+
+
+class TestReplayArtifactGate:
+    @pytest.mark.asyncio
+    async def test_missing_execution_outputs_fails(self, tmp_path):
+        """Replay must fail with artifact_missing when execution_outputs missing."""
+        run_dir_path = await _run_and_capture("分析 600519.SH", tmp_path)
+        import pathlib
+        p = pathlib.Path(run_dir_path)
+        (p / "execution_outputs.json").unlink()
+        verification = await run_full_replay(p)
+        assert verification["status"] == "artifact_missing"
+        assert "execution_outputs" in verification["reason"]
+
+    @pytest.mark.asyncio
+    async def test_missing_manifest_fails(self, tmp_path):
+        run_dir_path = await _run_and_capture("分析 600519.SH", tmp_path)
+        import pathlib
+        p = pathlib.Path(run_dir_path)
+        (p / "manifest.json").unlink()
+        verification = await run_full_replay(p)
+        assert verification["status"] == "artifact_missing"
+        assert "manifest" in verification["reason"]
+
+    @pytest.mark.asyncio
+    async def test_tampered_node_hash_fails(self, tmp_path):
+        """Tampering a node output hash must fail node comparison."""
+        run_dir_path = await _run_and_capture("分析 600519.SH", tmp_path)
+        import pathlib
+        p = pathlib.Path(run_dir_path)
+        outputs = json.loads((p / "execution_outputs.json").read_text())
+        # Corrupt the output_hash of the first real skill node
+        for nid in outputs:
+            if "output_hash" in outputs[nid]:
+                outputs[nid]["output_hash"] = "0" * 64
+                break
+        (p / "execution_outputs.json").write_text(json.dumps(outputs))
+        verification = await run_full_replay(p)
+        # Manifest hash check detects tampering → artifact_missing
+        assert verification["status"] == "artifact_missing"
+        assert "hash mismatch" in verification["reason"]
+
+    @pytest.mark.asyncio
+    async def test_tampered_manifest_fails(self, tmp_path):
+        """Editing a file after run → manifest hash mismatch blocks replay."""
+        run_dir_path = await _run_and_capture("分析 600519.SH", tmp_path)
+        import pathlib
+        p = pathlib.Path(run_dir_path)
+        # Modify plan.json content (tamper)
+        plan = json.loads((p / "plan.json").read_text())
+        plan["objective"] = "tampered"
+        (p / "plan.json").write_text(json.dumps(plan))
+        verification = await run_full_replay(p)
+        assert verification["status"] == "artifact_missing"
+        assert "hash mismatch" in verification["reason"]
+
+    @pytest.mark.asyncio
+    async def test_run_generates_manifest_and_outputs(self, tmp_path):
+        """A real run must produce manifest.json + execution_outputs.json."""
+        run_dir_path = await _run_and_capture("分析 600519.SH", tmp_path)
+        import pathlib
+        p = pathlib.Path(run_dir_path)
+        assert (p / "manifest.json").exists()
+        assert (p / "execution_outputs.json").exists()
+        assert (p / "result_manifest.json").exists()
+        manifest = json.loads((p / "manifest.json").read_text())
+        assert manifest["manifest_version"] == "1.0.0"
+        assert "execution_outputs.json" in manifest["artifacts"]
+        assert "result_manifest.json" in manifest["artifacts"]

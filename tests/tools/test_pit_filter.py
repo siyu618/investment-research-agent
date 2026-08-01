@@ -51,3 +51,33 @@ class TestPITFilter:
         dc = DataCollector(MockMarketDataProvider())
         ds = await dc.collect(stock_codes=["600519.SH"], load_valuation=False)
         assert len(ds.financials("600519.SH")) >= 1
+
+    async def test_valuation_future_excluded(self):
+        """Valuation with trade_date > as_of must not enter the dataset."""
+        dc = DataCollector(MockMarketDataProvider())
+        # as_of before the mock valuation's trade_date (20251231)
+        ds = await dc.collect(stock_codes=["600519.SH"], as_of="20250101",
+                              load_financials=False)
+        val = ds.valuation("600519.SH")
+        # Mock valuation trade_date is 20251231 > 20250101 → excluded
+        assert val == {}
+
+    async def test_valuation_past_included(self):
+        dc = DataCollector(MockMarketDataProvider())
+        ds = await dc.collect(stock_codes=["600519.SH"], as_of="20261231",
+                              load_financials=False)
+        val = ds.valuation("600519.SH")
+        assert val.get("pe") is not None
+
+    async def test_pit_stats_recorded(self):
+        """DataCollector must record per-layer PIT filter statistics."""
+        dc = DataCollector(MockMarketDataProvider())
+        await dc.collect(stock_codes=["600519.SH"], as_of="20250101",
+                         load_valuation=False)
+        stats = dc._pit_stats
+        assert stats, "expected PIT stats to be recorded"
+        for key, counts in stats.items():
+            assert "fetched" in counts
+            assert "kept" in counts
+            assert "filtered_future" in counts
+            assert "filtered_unknown_date" in counts
