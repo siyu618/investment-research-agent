@@ -184,6 +184,21 @@ class VerificationResult:
     checks: list[dict] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    policy_mode: str = "standard"
+
+    def to_dict(self) -> dict:
+        return {
+            "passed": self.passed,
+            "policy_mode": self.policy_mode,
+            "data_complete": self.data_complete,
+            "strategy_consistent": self.strategy_consistent,
+            "risk_validated": self.risk_validated,
+            "check_count": len(self.checks),
+            "checks": self.checks,
+            "warnings": self.warnings,
+            "errors": self.errors,
+            "blocked": not self.passed,
+        }
 
 
 @dataclass

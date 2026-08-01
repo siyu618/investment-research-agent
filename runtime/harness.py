@@ -60,6 +60,7 @@ class Harness:
         self._pending_hook_tasks: list[asyncio.Task] = []
         self.hook_error_count: int = 0
         self.last_plan: Any = None
+        self.last_verification: Any = None
 
     def add_hook(self, hook: LifecycleHook) -> None:
         """Register a lifecycle hook."""
@@ -115,6 +116,7 @@ class Harness:
                 lambda: verifier.verify(plan, exec_result),
                 context,
             )
+            self.last_verification = verification
             self._emit(EventType.VERIFICATION_COMPLETED, {
                 "passed": verification.passed,
             })

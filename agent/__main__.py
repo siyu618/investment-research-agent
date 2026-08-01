@@ -148,13 +148,19 @@ async def run_research(requirement: str, args):
 
     # Record full run artifacts (audit/replay support)
     plan_dict = _plan_to_dict(harness.last_plan)
+    verification = harness.last_verification
+    verification_dict = verification.to_dict() if verification else {
+        "passed": False, "policy_mode": "standard", "blocked": True,
+        "checks": [], "warnings": [],
+        "errors": ["Verification did not complete (pipeline failed earlier)"],
+    }
     recorder.save_full_run(
         run_id=run_id,
         request={"requirement": requirement, "provider": args.provider},
         plan=plan_dict,
         tool_trace=executor.trace_records(),
         snapshots=executor.snapshot_records(),
-        verification={"passed": True, "warnings": [], "errors": []},
+        verification=verification_dict,
         report_md=report_str,
         meta={
             "status": "success" if result.success else "failed",
@@ -174,77 +180,42 @@ async def run_research(requirement: str, args):
 
 
 async def run_replay(run_path: str, args):
-    """Replay a historical run from its recorded artifacts.
+    """Full DAG replay from recorded artifacts.
 
-    Rebuilds the ResearchDataset from data_snapshot.json and re-executes
-    the skills deterministically — no provider calls. Output must match
-    the original run's report (same snapshot → same result).
+    Restores request/plan/snapshot, re-executes the whole DAG with the
+    Provider forbidden, and writes replay_verification.json comparing
+    hashes, verification, and report structure.
     """
     import json as _json
     from pathlib import Path as _Path
 
-    from runtime.snapshot import ResearchDataset
+    from agent.replay import run_full_replay
 
     run_dir = _Path(run_path)
-    snapshot_file = run_dir / "data_snapshot.json"
-    if not snapshot_file.exists():
-        print(f"✗ 未找到数据快照: {snapshot_file}")
+    if not (run_dir / "data_snapshot.json").exists():
+        print(f"✗ 未找到数据快照: {run_dir / 'data_snapshot.json'}")
         return
 
     print(f"\n{'='*60}")
-    print(f"  Replay: {run_dir.name}")
+    print(f"  Full DAG Replay: {run_dir.name}")
     print(f"{'='*60}\n")
 
-    # 1. Rebuild dataset from recorded snapshot
-    snap = _json.loads(snapshot_file.read_text())
-    dataset = ResearchDataset.from_dict(snap)
-    print(f"  快照: {snap.get('slice_count', 0)} slice(s), "
-          f"as_of={snap.get('as_of', '')}, "
-          f"source={dataset.slices[0].source if dataset.slices else '?'}")
-    print(f"  股票数: {len(dataset.stocks())}")
+    verification = await run_full_replay(run_dir)
 
-    # 2. Re-execute skills deterministically from the dataset
-    from skills.base.skill_sdk import SkillPlan
-    from strategies.loader import load_skill
-    from tools.providers import StockBasic
+    out = run_dir / "replay_verification.json"
+    out.write_text(_json.dumps(verification, indent=2, ensure_ascii=False, default=str),
+                   encoding="utf-8")
 
-    stock_dicts = dataset.stocks()
-    stocks = [
-        StockBasic(
-            ts_code=s.get("ts_code", ""),
-            name=s.get("name", s.get("ts_code", "")),
-            industry=s.get("industry", ""),
-            market=s.get("market", ""),
-            list_date=s.get("list_date", ""),
-        )
-        for s in stock_dicts
-    ]
-    results: dict[str, Any] = {}
-    for skill_name in ("fundamental-analysis", "valuation-analysis", "risk-analysis"):
-        skill = load_skill(skill_name)
-        ctx = {"stocks": stocks, "dataset": dataset}
-        output = await skill.execute(ctx, SkillPlan())
-        results[skill_name] = output
-        print(f"  [{skill_name}] score={output.score:.3f} "
-              f"conf={output.confidence:.2f}")
-
-    # 3. Rebuild report
-
-    market_overview = f"重放 {len(stocks)} 只股票（来自 {run_dir.name} 快照）"
-    report_md = (
-        f"# 🔁 回放报告（Replay）\n\n"
-        f"**来源运行:** {run_dir.name}\n\n"
-        f"## 数据快照\n{market_overview}\n\n"
-    )
-    for skill_name, output in results.items():
-        report_md += f"### {skill_name}\n- 评分: {output.score:.3f}\n"
-        if output.reasoning:
-            report_md += f"- 说明: {output.reasoning[:200]}\n"
-        report_md += "\n"
-
-    out = run_dir / "replay_report.md"
-    out.write_text(report_md, encoding="utf-8")
-    print(f"\n✅ 重放完成 → {out}")
+    status = verification["status"]
+    print(f"  状态: {status.upper()}")
+    for diff in verification.get("diffs", []):
+        print(f"  ✗ {diff}")
+    if not verification.get("diffs"):
+        print("  ✓ 快照/计划/报告结构 全部一致")
+    print(f"  Provider 访问尝试: {verification['checks']['provider_access_attempted']}")
+    print(f"  Verifier: passed={verification['checks']['verification']['passed']} "
+          f"({verification['checks']['verification']['policy_mode']})")
+    print(f"\n✅ 重放验证 → {out}")
 
 
 def _plan_to_dict(plan: Any) -> dict:
@@ -267,13 +238,16 @@ def _build_agent_trace(executor: Any, requirement: str, harness: Any) -> list[di
 
     entries: list[dict] = []
 
+    from runtime.snapshot import hash_of
+
     # Planner (from harness last_plan)
     plan_dict = _plan_to_dict(harness.last_plan)
     entries.append({
         "run_id": executor.run_id, "step_id": "planner", "kind": "planner",
         "name": "Planner", "status": "ok",
-        "input_summary": requirement[:200], "input_hash": "",
-        "output_summary": plan_dict.get("objective", ""), "output_hash": "",
+        "input_summary": requirement[:200], "input_hash": hash_of(requirement),
+        "output_summary": plan_dict.get("objective", ""),
+        "output_hash": hash_of(plan_dict),
         "output_size": len(plan_dict), "duration_ms": 0, "retry_count": 0,
         "error": "", "token_usage": {}, "timestamp": _dt.now().isoformat(),
     })
@@ -281,15 +255,37 @@ def _build_agent_trace(executor: Any, requirement: str, harness: Any) -> list[di
     # Skill + tool entries from executor
     entries.extend(executor.agent_trace_records())
 
-    # Verifier
-    entries.append({
-        "run_id": executor.run_id, "step_id": "verifier", "kind": "verifier",
-        "name": "Verifier", "status": "ok",
-        "input_summary": "", "input_hash": "",
-        "output_summary": "verification gate", "output_hash": "",
-        "output_size": 0, "duration_ms": 0, "retry_count": 0,
-        "error": "", "token_usage": {}, "timestamp": _dt.now().isoformat(),
-    })
+    # Verifier — status/output from the REAL VerificationResult
+    verification = harness.last_verification
+    if verification is not None:
+        v_dict = verification.to_dict()
+        entries.append({
+            "run_id": executor.run_id, "step_id": "verifier", "kind": "verifier",
+            "name": "Verifier",
+            "status": "ok" if verification.passed else "failed",
+            "input_summary": f"policy={verification.policy_mode}",
+            "input_hash": "",
+            "output_summary": f"passed={verification.passed} "
+                              f"checks={len(verification.checks)} "
+                              f"warnings={len(verification.warnings)} "
+                              f"errors={len(verification.errors)}",
+            "output_hash": hash_of(v_dict),
+            "output_size": len(verification.checks),
+            "duration_ms": 0, "retry_count": 0,
+            "error": "; ".join(verification.errors[:2]),
+            "token_usage": {}, "timestamp": _dt.now().isoformat(),
+        })
+    else:
+        entries.append({
+            "run_id": executor.run_id, "step_id": "verifier", "kind": "verifier",
+            "name": "Verifier", "status": "failed",
+            "input_summary": "", "input_hash": "",
+            "output_summary": "verification did not complete",
+            "output_hash": "", "output_size": 0,
+            "duration_ms": 0, "retry_count": 0,
+            "error": "pipeline failed before verification",
+            "token_usage": {}, "timestamp": _dt.now().isoformat(),
+        })
     return entries
 
 

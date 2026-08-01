@@ -158,8 +158,25 @@ class Executor:
 
     # ─── Data Collection (delegated to DataCollector) ──────────────────
 
+    def set_dataset(self, dataset: ResearchDataset) -> None:
+        """Inject a pre-built dataset (used by replay — no provider access)."""
+        self._dataset = dataset
+        self._stocks = dataset.stocks()
+
     async def _run_data_collector(self, input_data: dict) -> dict:
-        """Collect all data layers via DataCollector → ResearchDataset."""
+        """Collect all data layers via DataCollector → ResearchDataset.
+
+        In replay mode (dataset pre-injected), reuses the dataset instead
+        of touching the provider.
+        """
+        if self._dataset is not None:
+            return {
+                "stock_count": len(self._stocks),
+                "stocks": self._stocks,
+                "stocks_basic": self._stocks,
+                "dataset": self._dataset.to_dict(),
+                "replayed": True,
+            }
         requested = list(input_data.get("stock_codes") or []) or self._requested_codes
         start_date = str(input_data.get("start_date", "20240101"))
         end_date = str(input_data.get("end_date", "20251231"))

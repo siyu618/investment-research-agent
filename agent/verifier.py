@@ -103,6 +103,7 @@ class Verifier:
             checks=[f.to_dict() for f in findings],
             warnings=[f.message for f in findings if f.severity == Severity.WARNING],
             errors=[f.message for f in findings if f.severity in (Severity.ERROR, Severity.FATAL)],
+            policy_mode=self.policy.value,
         )
 
     # ─── Checks ────────────────────────────────────────────────────────
