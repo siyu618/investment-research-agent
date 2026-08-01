@@ -163,8 +163,10 @@ async def run_research(requirement: str, args):
             "error": result.error or "",
             "hook_errors": harness.hook_error_count,
         },
+        agent_trace=_build_agent_trace(executor, requirement, harness),
+        graph_mmd=RunRecorder.build_execution_graph(plan_dict, {}),
     )
-    print(f"\n📁 运行记录已保存: runs/{run_id}/  (request/plan/tool_trace/data_snapshot/verification/report)")
+    print(f"\n📁 运行记录已保存: runs/{run_id}/  (request/plan/tool_trace/agent_trace/data_snapshot/verification/report/execution_graph)")
 
     # Hook error count
     if harness.hook_error_count > 0:
@@ -257,6 +259,38 @@ def _plan_to_dict(plan: Any) -> dict:
         return d
     except Exception:
         return {"note": str(plan)}
+
+
+def _build_agent_trace(executor: Any, requirement: str, harness: Any) -> list[dict]:
+    """Assemble the unified lifecycle trace for agent_trace.jsonl."""
+    from datetime import datetime as _dt
+
+    entries: list[dict] = []
+
+    # Planner (from harness last_plan)
+    plan_dict = _plan_to_dict(harness.last_plan)
+    entries.append({
+        "run_id": executor.run_id, "step_id": "planner", "kind": "planner",
+        "name": "Planner", "status": "ok",
+        "input_summary": requirement[:200], "input_hash": "",
+        "output_summary": plan_dict.get("objective", ""), "output_hash": "",
+        "output_size": len(plan_dict), "duration_ms": 0, "retry_count": 0,
+        "error": "", "token_usage": {}, "timestamp": _dt.now().isoformat(),
+    })
+
+    # Skill + tool entries from executor
+    entries.extend(executor.agent_trace_records())
+
+    # Verifier
+    entries.append({
+        "run_id": executor.run_id, "step_id": "verifier", "kind": "verifier",
+        "name": "Verifier", "status": "ok",
+        "input_summary": "", "input_hash": "",
+        "output_summary": "verification gate", "output_hash": "",
+        "output_size": 0, "duration_ms": 0, "retry_count": 0,
+        "error": "", "token_usage": {}, "timestamp": _dt.now().isoformat(),
+    })
+    return entries
 
 
 if __name__ == "__main__":

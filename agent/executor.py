@@ -66,6 +66,7 @@ class Executor:
         self._stocks: list = []
         self._dataset: ResearchDataset | None = None
         self._requested_codes: list[str] = []
+        self._agent_trace: list[dict] = []  # skill-level lifecycle entries
 
     # ─── Execution ─────────────────────────────────────────────────────
 
@@ -94,6 +95,10 @@ class Executor:
         )
 
         async def skill_executor(node, input_data, context):
+            from datetime import datetime as _dt
+
+            from runtime.tracing.agent_trace import TraceRecord
+
             if node.skill == "data-collector":
                 return await self._run_data_collector(input_data)
             skill = self.skills.get(node.skill)
@@ -103,7 +108,30 @@ class Executor:
             ctx["stocks"] = self._stock_objects()
             ctx["dataset"] = self._dataset  # Skills consume snapshots only
             from skills.base.skill_sdk import SkillPlan
-            return await skill.execute(ctx, SkillPlan())
+
+            # Record a skill-level trace entry (for agent_trace.jsonl)
+            t0 = _dt.now()
+            try:
+                output = await skill.execute(ctx, SkillPlan())
+                self._agent_trace.append(TraceRecord.make(
+                    run_id=self.run_id, step_id=node.id, kind="skill",
+                    name=node.skill,
+                    input_data={"stock_count": len(self._stocks)},
+                    output_data={"score": getattr(output, "score", None)},
+                    duration_ms=int((_dt.now() - t0).total_seconds() * 1000),
+                    status="ok",
+                ).to_jsonl())
+                return output
+            except Exception as e:
+                self._agent_trace.append(TraceRecord.make(
+                    run_id=self.run_id, step_id=node.id, kind="skill",
+                    name=node.skill,
+                    input_data={"stock_count": len(self._stocks)},
+                    output_data={},
+                    duration_ms=int((_dt.now() - t0).total_seconds() * 1000),
+                    status="error", error=str(e)[:200],
+                ).to_jsonl())
+                raise
 
         result = await self.scheduler.run(
             graph=graph,
@@ -195,9 +223,13 @@ class Executor:
         return []
 
     def trace_records(self) -> list[dict]:
-        """Serialized trace records (collector + executor) for tool_trace.jsonl."""
-        records = [r.to_jsonl() for r in self.collector.trace_records]
-        return records
+        """Serialized tool-call trace (for tool_trace.jsonl)."""
+        return [r.to_jsonl() for r in self.collector.trace_records]
+
+    def agent_trace_records(self) -> list[dict]:
+        """Unified lifecycle trace: collector tool calls + skill executions."""
+        tool_records = [r.to_jsonl() for r in self.collector.trace_records]
+        return tool_records + list(self._agent_trace)
 
     def get_graph_result(self) -> GraphResult | None:
         return self._last_graph_result

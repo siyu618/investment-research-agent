@@ -65,8 +65,15 @@ class RunRecorder:
         verification: dict,
         report_md: str,
         meta: dict,
+        agent_trace: list[dict] | None = None,
+        graph_mmd: str = "",
     ) -> Path:
-        """Write all standard artifacts for a run. Returns run dir."""
+        """Write all standard artifacts for a run. Returns run dir.
+
+        Extra artifacts (when provided):
+          - agent_trace: unified lifecycle trace (planner/skill/tool/verifier/llm)
+          - graph_mmd:   Mermaid execution flowchart
+        """
         run_dir = self.create_run(run_id)
 
         self.write_json(run_id, "request.json", request)
@@ -80,10 +87,57 @@ class RunRecorder:
         self.write_json(run_id, "meta.json", meta)
         self.write_text(run_id, "report.md", report_md)
 
-        # tool_trace.jsonl — one object per line
+        # tool_trace.jsonl — one object per line (tool-call granularity)
         trace_path = run_dir / "tool_trace.jsonl"
         with open(trace_path, "w", encoding="utf-8") as f:
             for rec in tool_trace:
                 f.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
 
+        # agent_trace.jsonl — unified lifecycle (planner/skill/verifier/llm/...)
+        if agent_trace is not None:
+            agent_path = run_dir / "agent_trace.jsonl"
+            with open(agent_path, "w", encoding="utf-8") as f:
+                for rec in agent_trace:
+                    f.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
+
+        # execution_graph.mmd — Mermaid flowchart
+        if graph_mmd:
+            self.write_text(run_id, "execution_graph.mmd", graph_mmd)
+
         return run_dir
+
+    # ─── Mermaid graph helpers ──────────────────────────────────────────
+
+    @staticmethod
+    def build_execution_graph(plan: dict, results: dict[str, Any]) -> str:
+        """Build a Mermaid flowchart from the plan steps + results.
+
+        Nodes = analysis steps; edges = dependencies; status shown.
+        """
+        steps = plan.get("analysis_steps", [])
+        if not steps:
+            return ""
+
+        lines = ["flowchart TD"]
+        node_ids = {}
+
+        # Step 1: define nodes
+        for s in steps:
+            sid = s.get("id")
+            skill = s.get("skill", "?")
+            status = s.get("status", "pending")
+            label = f"{sid}:{skill}"
+            if status == "completed":
+                label += " ✓"
+            elif status == "failed":
+                label += " ✗"
+            nid = f"n{sid}"
+            node_ids[sid] = nid
+            lines.append(f'    {nid}["{label}"]')
+
+        # Step 2: edges from depends_on
+        for s in steps:
+            for dep in s.get("depends_on", []):
+                lines.append(f"    {node_ids.get(dep, '?')} --> {node_ids.get(s.get('id'), '?')}")
+
+        return "\n".join(lines)
