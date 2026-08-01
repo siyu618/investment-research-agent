@@ -70,6 +70,22 @@ class CompanyFundamentalProfile:
 # ─── Calculation Functions ────────────────────────────────────────────────
 
 
+def _available_at(s: FinancialStatement) -> str:
+    """ISO date when this record became available (PIT).
+
+    Prefers the record's ann_date (disclosure date); falls back to
+    end_date when no announcement date is present.
+    """
+    if getattr(s, "ann_date", ""):
+        ann = str(s.ann_date)
+        if len(ann) == 8:
+            return f"{ann[:4]}-{ann[4:6]}-{ann[6:8]}"
+    d = str(s.end_date)
+    if len(d) == 8:
+        return f"{d[:4]}-{d[4:6]}-{d[6:8]}"
+    return f"{s.end_date[:4]}-12-31"
+
+
 def compute_roe(stmts: list[FinancialStatement]) -> list[MetricProvenance]:
     """Return ROE per annual period: net_profit / equity."""
     results = []
@@ -82,7 +98,7 @@ def compute_roe(stmts: list[FinancialStatement]) -> list[MetricProvenance]:
             value=roe,
             unit="ratio",
             period=s.end_date[:4],
-            available_at=f"{s.end_date[:4]}-12-31",
+            available_at=_available_at(s),
             source="financial_summary",
             warning="" if 0 < roe < 1 else "异常值: ROE超出正常范围",
         ))
@@ -107,7 +123,7 @@ def compute_revenue_growth(stmts: list[FinancialStatement]) -> list[MetricProven
                 value=round(growth, 4),
                 unit="ratio",
                 period=f"{prev.end_date[:4]}-{curr.end_date[:4]}",
-                available_at=f"{curr.end_date[:4]}-12-31",
+                available_at=_available_at(curr),
                 source="income_statement",
                 warning="缺失前期数据" if prev_rev is None else "",
             ))
@@ -132,7 +148,7 @@ def compute_profit_growth(stmts: list[FinancialStatement]) -> list[MetricProvena
                 value=round(growth, 4),
                 unit="ratio",
                 period=f"{prev.end_date[:4]}-{curr.end_date[:4]}",
-                available_at=f"{curr.end_date[:4]}-12-31",
+                available_at=_available_at(curr),
                 source="income_statement",
             ))
     return results
@@ -159,7 +175,7 @@ def compute_cashflow_quality(stmts: list[FinancialStatement]) -> list[MetricProv
             value=ratio,
             unit="ratio",
             period=s.end_date[:4],
-            available_at=f"{s.end_date[:4]}-12-31",
+            available_at=_available_at(s),
             source="cashflow",
             warning=warning,
         ))
@@ -185,7 +201,7 @@ def compute_debt_ratio(stmts: list[FinancialStatement]) -> list[MetricProvenance
             value=ratio,
             unit="ratio",
             period=s.end_date[:4],
-            available_at=f"{s.end_date[:4]}-12-31",
+            available_at=_available_at(s),
             source="balance_sheet",
             warning=warning,
         ))
@@ -208,7 +224,7 @@ def compute_gross_margin_change(stmts: list[FinancialStatement]) -> list[MetricP
             value=round(gm, 4),
             unit="ratio",
             period=s.end_date[:4],
-            available_at=f"{s.end_date[:4]}-12-31",
+            available_at=_available_at(s),
             source="income_statement",
         ))
     return results

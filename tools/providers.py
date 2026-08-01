@@ -48,7 +48,8 @@ class FinancialStatement:
     Maps from any provider's column naming to a standard schema.
     """
     ts_code: str
-    end_date: str                    # e.g. "20241231"
+    end_date: str                    # e.g. "20241231" (report period end)
+    ann_date: str = ""               # announcement/disclosure date YYYYMMDD (PIT)
     report_type: str = "annual"      # annual | q1 | q2 | q3
 
     # Income statement
@@ -256,10 +257,17 @@ def _make_financials(ts_code: str, years: int = 3) -> list[FinancialStatement]:
             if i == 0 and suffix != "1231":
                 continue
             end_date = f"{year}{suffix}"
+            report_type = (
+                "annual" if suffix == "1231"
+                else "q3" if suffix == "0930"
+                else "q2" if suffix == "0630"
+                else "q1"
+            )
             results.append(FinancialStatement(
                 ts_code=ts_code,
                 end_date=end_date,
-                report_type="annual" if suffix == "1231" else ("q3" if suffix == "0930" else "q2" if suffix == "0630" else "q1"),
+                ann_date=_announcement_date(ts_code, end_date, report_type),
+                report_type=report_type,
                 revenue=rev,
                 net_profit=np,
                 operating_profit=np * 1.05,
@@ -274,6 +282,27 @@ def _make_financials(ts_code: str, years: int = 3) -> list[FinancialStatement]:
                 roe=np / equity if equity else 0.0,
             ))
     return results
+
+
+def _announcement_date(ts_code: str, end_date: str, report_type: str) -> str:
+    """Compute a realistic announcement date = period end + disclosure lag.
+
+    Lag by report type (annual ~90d, Q3 ~30d, Q2 ~45d, Q1 ~30d) plus a
+    deterministic per-record jitter. Guarantees ann_date > period end so
+    PIT filtering (available_at <= as_of) is meaningful.
+    """
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
+
+    base_lag = {
+        "annual": 90, "q3": 30, "q2": 45, "q1": 30,
+    }.get(report_type, 30)
+    jitter = int(_stable_float(ts_code, f"lag:{end_date}", 0, 15))
+    lag_days = base_lag + jitter
+
+    end = _dt.strptime(end_date, "%Y%m%d")
+    ann = end + _td(days=lag_days)
+    return ann.strftime("%Y%m%d")
 
 
 def _make_prices(ts_code: str) -> list[DailyPrice]:
@@ -597,7 +626,7 @@ class OfficialTushareMCPProvider(MarketDataProvider):
         pro = self._ensure_pro()
         df = await self._call(
             pro.income, ts_code=ts_code, start_date=start_date, end_date=end_date,
-            fields="ts_code,end_date,report_type,revenue,n_income,operate_profit",
+            fields="ts_code,end_date,ann_date,f_ann_date,report_type,revenue,n_income,operate_profit",
         )
         return self._map_income(df)
 
@@ -607,7 +636,7 @@ class OfficialTushareMCPProvider(MarketDataProvider):
         pro = self._ensure_pro()
         df = await self._call(
             pro.balancesheet, ts_code=ts_code, start_date=start_date, end_date=end_date,
-            fields="ts_code,end_date,report_type,total_assets,total_liab,total_hldr_eqy_exc_min_int",
+            fields="ts_code,end_date,ann_date,f_ann_date,report_type,total_assets,total_liab,total_hldr_eqy_exc_min_int",
         )
         results = []
         for _, row in df.iterrows():
@@ -617,6 +646,7 @@ class OfficialTushareMCPProvider(MarketDataProvider):
             results.append(FinancialStatement(
                 ts_code=ts_code,
                 end_date=str(row["end_date"]),
+                ann_date=_pick_ann_date(row),
                 report_type=_report_type(str(row.get("report_type", "1"))),
                 total_assets=assets,
                 total_liabilities=liab,
@@ -630,13 +660,14 @@ class OfficialTushareMCPProvider(MarketDataProvider):
         pro = self._ensure_pro()
         df = await self._call(
             pro.cashflow, ts_code=ts_code, start_date=start_date, end_date=end_date,
-            fields="ts_code,end_date,report_type,n_cashflow_act",
+            fields="ts_code,end_date,ann_date,f_ann_date,report_type,n_cashflow_act",
         )
         results = []
         for _, row in df.iterrows():
             results.append(FinancialStatement(
                 ts_code=ts_code,
                 end_date=str(row["end_date"]),
+                ann_date=_pick_ann_date(row),
                 report_type=_report_type(str(row.get("report_type", "1"))),
                 operating_cash_flow=float(row.get("n_cashflow_act", 0) or 0),
             ))
@@ -679,6 +710,7 @@ class OfficialTushareMCPProvider(MarketDataProvider):
             results.append(FinancialStatement(
                 ts_code=str(row["ts_code"]),
                 end_date=str(row["end_date"]),
+                ann_date=_pick_ann_date(row),
                 report_type=_report_type(str(row.get("report_type", "1"))),
                 revenue=float(row.get("revenue", 0) or 0),
                 net_profit=float(row.get("n_income", 0) or 0),
@@ -697,6 +729,15 @@ def _report_type(rt: str) -> str:
         "5": "annual",
     }
     return mapping.get(rt, "annual")
+
+
+def _pick_ann_date(row) -> str:
+    """Pick the disclosure date from a Tushare row (f_ann_date or ann_date)."""
+    for key in ("f_ann_date", "ann_date"):
+        v = row.get(key)
+        if v is not None and str(v):
+            return str(v)[:8]
+    return ""
 
 
 # ─── Provider Extension Points ─────────────────────────────────────────────
