@@ -26,19 +26,22 @@ export TUSHARE_TOKEN=your_token_here
 python -m agent --requirement "分析 600519.SH" --provider tushare
 ```
 
-每次运行会在 `runs/{run_id}/` 生成完整的审计记录（9 个文件）：
+每次运行会在 `runs/{run_id}/` 生成完整的审计记录（10 个文件）：
 
 ```
 request.json          原始需求
 plan.json             结构化计划（objective/weights/steps）
 tool_trace.jsonl      工具调用级 trace（输入/输出 hash、耗时、重试）
 agent_trace.jsonl     统一生命周期 trace（planner→tools→skills→verifier）
-data_snapshot.json    完整 point-in-time 数据快照（可重放）
+data_snapshot.json    完整 point-in-time 数据快照（可重放，含 content_hash + snapshot_hash）
+execution_outputs.json 每个 DAG 节点的标准化输出 + hash（Replay 逐节点比较）
 verification.json     校验结果（severity + policy mode）
 execution_graph.mmd   Mermaid 执行流程图
 report.md             最终 Markdown 报告
 meta.json             运行元信息（状态/耗时/事件数/错误）
 ```
+
+**Hash 体系**：`content_hash` 只覆盖数据内容（跨环境稳定，供缓存）；`snapshot_hash` 覆盖内容 + as_of/publish_date/effective_date 等完整上下文（供 Replay 等价验证）。两者均已由测试验证。
 
 ## Replay 验证
 
@@ -47,12 +50,19 @@ meta.json             运行元信息（状态/耗时/事件数/错误）
 python -m agent --requirement "分析 600519.SH"
 R=$(ls -t runs/ | head -1)
 
-# 完整 DAG Replay：恢复 request/plan/snapshot，按原 DAG 重放全部节点
+# Deterministic Replay Verification：恢复 request/plan/snapshot，
+# 按原 DAG 重放全部节点（Provider 禁止访问），逐节点比较
 python -m agent --replay "runs/$R"
-# 期望输出：状态 PASSED，Provider 访问尝试 0 次，快照/计划 hash 一致
+# 期望输出：状态 PASSED，Provider 访问尝试 0 次，快照/计划/节点 hash 全部一致
 ```
 
-Replay 期间通过 `ForbiddenProvider` 禁止任何外部数据访问（任何 Provider 调用立即抛错）。执行后自动对比 Snapshot hash、Plan hash、候选数量、报告结构，结果写入 `runs/{run_id}/replay_verification.json`；不一致时标记 `failed` 并列出差异。
+Replay 期间通过 `ForbiddenProvider` 禁止任何外部数据访问（任何 Provider 调用立即抛错）。执行后逐项比较：
+- **snapshot_hash**（完整上下文，非 content_hash）
+- **plan_hash**
+- **每个真实 Skill 节点的 output_hash**（来自 `execution_outputs.json`，逐节点比较）
+- 候选数量、VerificationResult、报告结构
+
+结果写入 `runs/{run_id}/replay_verification.json`；任何差异标记 `failed` 并输出详细 diff（含每个不匹配节点的期望/实际 hash 前缀）。
 
 ---
 
@@ -116,7 +126,7 @@ Replay 期间通过 `ForbiddenProvider` 禁止任何外部数据访问（任何 
 | **Verifier** | severity(info/warning/error/fatal) + policy_mode(permissive/standard/strict)；未来函数→fatal 阻断 |
 | **报告生成** | 结构化 Markdown（表格 + 详细分析 + 免责声明） |
 | **受控 LLM** | 仅 NL→InvestmentRequest + 报告润色；不生成 DAG/不选工具/不计算 |
-| **RunRecorder** | 每次运行 9 个审计文件（含 agent_trace + Mermaid 图） |
+| **RunRecorder** | 每次运行 10 个审计文件（含 agent_trace + execution_outputs + Mermaid 图） |
 | **评估框架** | Agent 执行质量（agent-quality + trajectory）+ 实验性策略评估 |
 | **工程规范** | pyproject.toml、ruff、mypy、pre-commit、GitHub Actions CI |
 
@@ -146,7 +156,7 @@ Replay 期间通过 `ForbiddenProvider` 禁止任何外部数据访问（任何 
 # 安装开发依赖
 pip install -e ".[dev]"
 
-# 运行全部测试（当前 267 个）
+# 运行全部测试（当前 278 个）
 pytest tests/
 
 # 静态检查
@@ -255,7 +265,7 @@ runs/                     # 运行时产物（gitignored）
 ## 测试
 
 ```bash
-# 全部 267 个测试
+# 全部 278 个测试
 pytest tests/
 
 # 确定性指标计算
@@ -283,9 +293,10 @@ pytest tests/runtime/
 
 - [设计文档](docs/design.md)
 - [演进路线图](docs/evolutionary-roadmap.md)
-- [ADR-001~013](docs/adr/)
+- [ADR-001~014](docs/adr/)
   - ADR-012: 统一 trace_span 可观测性
   - ADR-013: Point-in-Time 数据字段 + as_of 过滤
+  - ADR-014: Deterministic Replay + content_hash/snapshot_hash 拆分
 - [评估框架](evaluations/README.md)
 - [可复现案例](evaluations/cases/README.md)
 - [Tushare 真实验证](evaluations/cases/tushare_live_validation.md)
