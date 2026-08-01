@@ -9,11 +9,15 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
 
 from strategies.base.models import AnalysisPlan, AnalysisStep
+
+logger = logging.getLogger("agent.planner")
 
 
 class InvestmentObjective(str, Enum):
@@ -63,9 +67,16 @@ class InvestmentRequest:
 class Planner:
     """Decomposes user investment requirements into structured analysis plans.
 
-    Phase 1: Rule-based classification of requirement → InvestmentRequest
-    Phase 2: InvestmentRequest → templated AnalysisPlan with ordered steps
+    Phase 1: requirement → InvestmentRequest
+        - LLM structured output (if configured) → validated InvestmentRequest
+        - deterministic rule-based fallback (always available)
+    Phase 2: InvestmentRequest → templated AnalysisPlan (always deterministic)
+
+    The LLM never shapes the DAG; it only fills the structured request.
     """
+
+    def __init__(self, llm: Any = None):
+        self.llm = llm
 
     async def create_plan(
         self,
@@ -74,14 +85,62 @@ class Planner:
     ) -> AnalysisPlan:
         """Parse user requirement and produce a structured AnalysisPlan.
 
-        No LLM dependency: uses keyword matching for classification
-        and deterministic template for plan generation.
+        Tries LLM structured extraction first, falling back to rules.
+        The returned plan is always deterministic (templated steps).
         """
-        request = self._parse_requirement(requirement)
+        request = await self._parse_requirement(requirement)
         return self._request_to_plan(request)
 
-    def _parse_requirement(self, requirement: str) -> InvestmentRequest:
-        """Rule-based parser for investment requirements.
+    async def _parse_requirement(self, requirement: str) -> InvestmentRequest:
+        """Requirement → InvestmentRequest (LLM first, rules fallback)."""
+        # 1. Try LLM structured extraction (bounded, Pydantic-validated)
+        if self.llm is not None and getattr(self.llm, "available", False):
+            try:
+                raw = await self.llm.parse_investment_request(requirement)
+                merged = self._merge_llm_request(raw, requirement)
+                return merged
+            except Exception:
+                logger.warning("LLM plan parse failed; falling back to rules",
+                               exc_info=True)
+
+        # 2. Deterministic rule-based fallback
+        return self._rule_parse(requirement)
+
+    def _merge_llm_request(self, raw: dict, requirement: str) -> InvestmentRequest:
+        """Merge LLM extraction with rule defaults (fills missing fields)."""
+        base = self._rule_parse(requirement)
+        # Override only fields the LLM explicitly provided and valid
+        if raw.get("stock_codes"):
+            base.stock_codes = [str(c) for c in raw["stock_codes"]]
+            base.stock_pool = "single"
+        if isinstance(raw.get("stock_pool"), str):
+            base.stock_pool = raw["stock_pool"]
+        try:
+            if raw.get("objective") in {o.value for o in InvestmentObjective}:
+                base.objective = InvestmentObjective(raw["objective"])
+        except ValueError:
+            pass
+        try:
+            if raw.get("risk_level") in {r.value for r in RiskLevel}:
+                base.risk_level = RiskLevel(raw["risk_level"])
+        except ValueError:
+            pass
+        try:
+            if raw.get("holding_period") in {h.value for h in HoldingPeriod}:
+                base.holding_period = HoldingPeriod(raw["holding_period"])
+        except ValueError:
+            pass
+        if isinstance(raw.get("top_k"), int) and raw["top_k"] > 0:
+            base.top_k = min(50, max(1, raw["top_k"]))
+        if isinstance(raw.get("constraints"), list):
+            base.constraints = [str(c) for c in raw["constraints"]]
+
+        # Recompute weights from merged objective/risk
+        base.strategy_weights = self._default_weights(base.objective, base.risk_level)
+        return base
+
+    def _rule_parse(self, requirement: str) -> InvestmentRequest:
+        """Deterministic rule-based parser (keyword matching + defaults).
 
         Supports Chinese and English keywords.
         Falls back to sensible defaults for ambiguous input.
@@ -258,7 +317,7 @@ class Planner:
 
     async def adjust_plan(self, plan: AnalysisPlan, feedback: str) -> AnalysisPlan:
         """Adjust an existing plan based on user feedback."""
-        req = self._parse_requirement(feedback)
+        req = await self._parse_requirement(feedback)
         # Merge: keep steps, update weights
         plan.strategy_weights = req.strategy_weights
         plan.risk_preference = req.risk_level.value

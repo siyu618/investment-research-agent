@@ -88,8 +88,11 @@ async def run_research(requirement: str, args):
     recorder = RunRecorder(runs_dir="runs")
     recorder.create_run(run_id)
 
-    # Domain components
-    planner = Planner()
+    # Domain components (LLM used only for NL parsing + report polish)
+    from agent.llm import LLMBackend
+
+    llm = LLMBackend()
+    planner = Planner(llm=llm)
     executor = Executor(provider=provider, event_bus=event_bus, config=config,
                         recorder=recorder, run_id=run_id)
     verifier = Verifier()
@@ -99,6 +102,7 @@ async def run_research(requirement: str, args):
     print("  投资研究 Agent")
     print(f"  数据提供者: {args.provider}")
     print(f"  Run ID: {run_id}")
+    print(f"  LLM: {'on (config key)' if llm.available else 'off (rule-based)'}")
     print(f"{'='*60}")
     print(f"  需求: {requirement}")
     print(f"{'='*60}\n")
