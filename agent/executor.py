@@ -261,6 +261,68 @@ class Executor:
         """Unified lifecycle trace: collector tool calls + skill executions."""
         return list(self.collector.trace_records) + list(self._agent_trace)
 
+    def execution_outputs(self) -> dict[str, dict]:
+        """Standardized per-node outputs + hashes for Replay comparison.
+
+        Each DAG node yields a stable representation (score + profile
+        summary + output hash) written to execution_outputs.json. Replay
+        compares these node-by-node.
+        """
+        from runtime.snapshot import hash_of
+
+        # Only compare REAL skill nodes (fund/val/risk). data-collector
+        # and portfolio/verifier/report placeholder nodes differ between
+        # a live run and a replayed run by design, so they are excluded.
+
+        outputs: dict[str, dict] = {}
+        if self._last_graph_result is not None:
+            for nid, nr in self._last_graph_result.node_results.items():
+                # Skip placeholder / collector nodes
+                if self._is_placeholder_node(nid):
+                    continue
+                raw = nr.output
+                # Normalize SkillOutput → stable dict
+                if raw is not None and hasattr(raw, "data"):
+                    score = getattr(raw, "score", None)
+                    data = getattr(raw, "data", {})
+                    profiles = data.get("profiles", []) if isinstance(data, dict) else []
+                    # Stable representation: code + score per profile
+                    profile_sigs = []
+                    for p in profiles:
+                        if isinstance(p, dict):
+                            profile_sigs.append({
+                                "ts_code": p.get("ts_code"),
+                                "score": p.get("score"),
+                            })
+                        else:
+                            profile_sigs.append({
+                                "ts_code": getattr(p, "ts_code", None),
+                                "score": getattr(p, "score", None),
+                            })
+                    canonical = {"score": score, "profiles": profile_sigs}
+                else:
+                    canonical = {"raw": raw}
+
+                outputs[nid] = {
+                    "success": getattr(nr, "success", False),
+                    "output_hash": hash_of(canonical),
+                    "summary": canonical,
+                }
+        return outputs
+
+    def _is_placeholder_node(self, node_id: str) -> bool:
+        """True for data-collector / verifier / report-generator nodes.
+
+        These are orchestration nodes whose real logic lives in the Harness,
+        not in a Skill. Their outputs are not part of deterministic analysis.
+        """
+        if node_id == "step-1":
+            return True  # data-collector
+        # placeholder skills are step 5-7 (portfolio/verifier/report-generator)
+        if node_id in ("step-5", "step-6", "step-7"):
+            return True
+        return False
+
     def get_graph_result(self) -> GraphResult | None:
         return self._last_graph_result
 

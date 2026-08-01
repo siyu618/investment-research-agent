@@ -67,12 +67,14 @@ class RunRecorder:
         meta: dict,
         agent_trace: list[dict] | None = None,
         graph_mmd: str = "",
+        execution_outputs: dict | None = None,
     ) -> Path:
         """Write all standard artifacts for a run. Returns run dir.
 
         Extra artifacts (when provided):
-          - agent_trace: unified lifecycle trace (planner/skill/tool/verifier/llm)
-          - graph_mmd:   Mermaid execution flowchart
+          - agent_trace:        unified lifecycle trace (planner/skill/tool/verifier/llm)
+          - graph_mmd:          Mermaid execution flowchart
+          - execution_outputs:  per-DAG-node outputs + hashes (for Replay)
         """
         run_dir = self.create_run(run_id)
 
@@ -103,6 +105,10 @@ class RunRecorder:
         # execution_graph.mmd — Mermaid flowchart
         if graph_mmd:
             self.write_text(run_id, "execution_graph.mmd", graph_mmd)
+
+        # execution_outputs.json — per-node outputs + hashes (for Replay)
+        if execution_outputs:
+            self.write_json(run_id, "execution_outputs.json", execution_outputs)
 
         return run_dir
 

@@ -65,21 +65,30 @@ def plan_from_dict(d: dict) -> AnalysisPlan:
 
 
 async def run_full_replay(run_dir: Path) -> dict:
-    """Execute a full DAG replay and return a verification report dict."""
+    """Deterministic Replay Verification.
+
+    Re-executes the full DAG (Provider forbidden) and compares EVERY node
+    against the original run's execution_outputs.json, plus snapshot/plan
+    hashes, candidate ranking, verification, and report structure.
+    Produces a detailed diff for any mismatch.
+    """
     from agent.executor import Executor
     from agent.report_generator import ReportGenerator
 
     # 1. Load artifacts
     snap = json.loads((run_dir / "data_snapshot.json").read_text())
     plan_dict = json.loads((run_dir / "plan.json").read_text())
+    orig_exec_outputs = {}
+    if (run_dir / "execution_outputs.json").exists():
+        orig_exec_outputs = json.loads((run_dir / "execution_outputs.json").read_text())
 
     # 2. Rebuild dataset + plan
     dataset = ResearchDataset.from_dict(snap)
     plan = plan_from_dict(plan_dict)
 
-    # Snapshot + plan hashes from the ORIGINAL run
+    # Original hashes (snapshot_hash, not content_hash — full context)
     orig_snapshot_hashes = [
-        s.get("data_hash", "") for s in snap.get("slices", [])
+        s.get("snapshot_hash", s.get("data_hash", "")) for s in snap.get("slices", [])
     ]
     orig_plan_hash = hash_of(plan_dict)
 
@@ -98,19 +107,35 @@ async def run_full_replay(run_dir: Path) -> dict:
     report = await reporter.generate(plan, exec_results, verification)
     report_md = reporter.format_markdown(report)
 
-    # 5. Build equivalence comparison
+    # 5. Node-by-node comparison against original execution_outputs
+    replay_exec_outputs = executor.execution_outputs()
+    node_checks: dict[str, dict] = {}
+    node_diffs: list[str] = []
+    all_nodes = set(orig_exec_outputs) | set(replay_exec_outputs)
+    for nid in sorted(all_nodes):
+        expected = orig_exec_outputs.get(nid, {}).get("output_hash", "")
+        actual = replay_exec_outputs.get(nid, {}).get("output_hash", "")
+        match = bool(expected and actual and expected == actual)
+        node_checks[nid] = {
+            "expected": expected,
+            "actual": actual,
+            "match": match,
+        }
+        if not match:
+            node_diffs.append(
+                f"node {nid} output mismatch "
+                f"(expected {expected[:12]}, got {actual[:12]})"
+            )
+
+    # 6. Snapshot / plan comparison
     replay_snapshot_hashes = [
-        s.get("data_hash", "") for s in executor.snapshot_records()
+        s.get("snapshot_hash", s.get("data_hash", "")) for s in executor.snapshot_records()
     ]
     replay_plan_hash = hash_of(_plan_to_serializable(plan))
+    snapshot_match = replay_snapshot_hashes == orig_snapshot_hashes
+    plan_match = replay_plan_hash == orig_plan_hash
 
-    # Skill output hashes from the replay run
-    skill_hashes: dict[str, str] = {}
-    for rec in executor.agent_trace_records():
-        if rec.get("kind") == "skill":
-            skill_hashes[rec.get("name", "")] = rec.get("output_hash", "")
-
-    # Candidate ranking from the report
+    # 7. Candidate ranking from the report
     candidates = []
     for c in getattr(report, "candidates", []):
         candidates.append({
@@ -118,7 +143,7 @@ async def run_full_replay(run_dir: Path) -> dict:
             "composite_score": getattr(c, "composite_score", 0),
         })
 
-    # Original run's report for structural comparison (if present)
+    # 8. Report structure
     orig_report = run_dir / "report.md"
     orig_report_has_sections = False
     if orig_report.exists():
@@ -127,12 +152,21 @@ async def run_full_replay(run_dir: Path) -> dict:
             sec in orig_text
             for sec in ("候选股票", "组合建议", "免责声明")
         )
-
-    # Compare
-    snapshot_match = replay_snapshot_hashes == orig_snapshot_hashes
-    plan_match = replay_plan_hash == orig_plan_hash
     report_sections_match = orig_report_has_sections and all(
         sec in report_md for sec in ("候选股票", "组合建议", "免责声明")
+    )
+
+    # 9. Aggregate diffs
+    diffs: list[str] = list(node_diffs)
+    if not snapshot_match:
+        diffs.append("snapshot_hash mismatch")
+    if not plan_match:
+        diffs.append("plan_hash mismatch")
+    if not report_sections_match:
+        diffs.append("report sections mismatch")
+
+    all_match = (
+        snapshot_match and plan_match and report_sections_match and not node_diffs
     )
 
     checks = {
@@ -146,6 +180,7 @@ async def run_full_replay(run_dir: Path) -> dict:
             "actual": replay_plan_hash,
             "match": plan_match,
         },
+        "node_outputs": node_checks,
         "verification": {
             "passed": verification.passed,
             "policy_mode": verification.policy_mode,
@@ -155,17 +190,7 @@ async def run_full_replay(run_dir: Path) -> dict:
         "candidate_count": len(candidates),
         "report_sections_present": report_sections_match,
         "provider_access_attempted": len(forbidden.calls),
-        "skill_output_hashes": skill_hashes,
     }
-
-    all_match = snapshot_match and plan_match and report_sections_match
-    diffs: list[str] = []
-    if not snapshot_match:
-        diffs.append("snapshot_hash mismatch")
-    if not plan_match:
-        diffs.append("plan_hash mismatch")
-    if not report_sections_match:
-        diffs.append("report sections mismatch")
 
     return {
         "status": "passed" if (all_match and verification.passed) else "failed",

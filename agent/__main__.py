@@ -171,8 +171,9 @@ async def run_research(requirement: str, args):
         },
         agent_trace=await _build_agent_trace(executor, requirement, harness),
         graph_mmd=RunRecorder.build_execution_graph(plan_dict, executor.get_graph_result()),
+        execution_outputs=executor.execution_outputs(),
     )
-    print(f"\n📁 运行记录已保存: runs/{run_id}/  (request/plan/tool_trace/agent_trace/data_snapshot/verification/report/execution_graph)")
+    print(f"\n📁 运行记录已保存: runs/{run_id}/  (request/plan/tool_trace/agent_trace/data_snapshot/verification/report/execution_graph/execution_outputs)")
 
     # Hook error count
     if harness.hook_error_count > 0:

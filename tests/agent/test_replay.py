@@ -47,6 +47,8 @@ async def _run_and_capture(requirement: str, tmp_path) -> str:
         "as_of": executor.snapshot_records()[0].get("as_of", "") if executor.snapshot_records() else "",
         "slices": executor.snapshot_records(),
     })
+    # Per-node outputs for deterministic replay comparison
+    recorder.write_json(run_id, "execution_outputs.json", executor.execution_outputs())
     # Report with the expected structural sections (replay compares these)
     recorder.write_text(
         run_id, "report.md",
