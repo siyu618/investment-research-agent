@@ -452,6 +452,11 @@ class OfficialTushareMCPProvider(MarketDataProvider):
             except Exception as e:
                 last_err = e
                 msg = str(e)
+                if "没有" in msg and "权限" in msg:
+                    # Permanent: no API permission — do NOT retry.
+                    raise TushareClientError(
+                        f"Tushare permission denied: {e}"
+                    ) from e
                 if "频率超限" in msg or "频次超限" in msg or "frequency" in msg.lower():
                     if "小时" in msg or "hour" in msg.lower():
                         # Hour-level quota: don't block the pipeline.
