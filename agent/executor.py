@@ -95,58 +95,55 @@ class Executor:
         )
 
         async def skill_executor(node, input_data, context):
-            from datetime import datetime as _dt
-
-            from runtime.tracing.agent_trace import TraceRecord
+            from runtime.snapshot import hash_of
+            from runtime.tracing.trace_span import trace_span
+            from skills.base.skill_sdk import SkillPlan
 
             if node.skill == "data-collector":
                 return await self._run_data_collector(input_data)
             skill = self.skills.get(node.skill)
             if skill is None:
-                return {"note": f"skill '{node.skill}' not implemented as skill", "input": input_data}
-            ctx = dict(input_data)
-            ctx["stocks"] = self._stock_objects()
-            ctx["dataset"] = self._dataset  # Skills consume snapshots only
-            # Snapshot immutability guard: hash BEFORE the skill runs
-            from runtime.snapshot import hash_of
-            from skills.base.skill_sdk import SkillPlan
+                async with trace_span(
+                    self.run_id, node.id, "skill", node.skill,
+                    sink=self._agent_trace,
+                ) as span:
+                    span.status = "error"
+                    span.error = f"skill '{node.skill}' not implemented"
+                    span.set_input(input_data)
+                return {"note": f"skill '{node.skill}' not implemented as skill",
+                        "input": input_data}
 
+            # Snapshot immutability guard: hash BEFORE the skill runs
             pre_hash = hash_of(self._dataset.to_dict()) if self._dataset else ""
 
-            # Record a skill-level trace entry (for agent_trace.jsonl)
-            t0 = _dt.now()
-            try:
-                output = await skill.execute(ctx, SkillPlan())
+            async with trace_span(
+                self.run_id, node.id, "skill", node.skill,
+                sink=self._agent_trace,
+            ) as span:
+                ctx = dict(input_data)
+                ctx["stocks"] = self._stock_objects()
+                ctx["dataset"] = self._dataset  # Skills consume snapshots only
+                span.set_input({"stock_count": len(self._stocks)})
+                try:
+                    output = await skill.execute(ctx, SkillPlan())
 
-                # Verify the skill did NOT mutate shared data
-                post_hash = hash_of(self._dataset.to_dict()) if self._dataset else ""
-                if pre_hash and post_hash != pre_hash:
-                    from runtime.errors import FatalError
+                    # Verify the skill did NOT mutate shared data
+                    post_hash = hash_of(self._dataset.to_dict()) if self._dataset else ""
+                    if pre_hash and post_hash != pre_hash:
+                        from runtime.errors import FatalError
 
-                    raise FatalError(
-                        f"Skill '{node.skill}' mutated shared snapshot data "
-                        f"(hash changed: {pre_hash[:8]} → {post_hash[:8]})"
-                    )
+                        raise FatalError(
+                            f"Skill '{node.skill}' mutated shared snapshot data "
+                            f"(hash changed: {pre_hash[:8]} → {post_hash[:8]})"
+                        )
 
-                self._agent_trace.append(TraceRecord.make(
-                    run_id=self.run_id, step_id=node.id, kind="skill",
-                    name=node.skill,
-                    input_data={"stock_count": len(self._stocks)},
-                    output_data={"score": getattr(output, "score", None)},
-                    duration_ms=int((_dt.now() - t0).total_seconds() * 1000),
-                    status="ok",
-                ).to_jsonl())
-                return output
-            except Exception as e:
-                self._agent_trace.append(TraceRecord.make(
-                    run_id=self.run_id, step_id=node.id, kind="skill",
-                    name=node.skill,
-                    input_data={"stock_count": len(self._stocks)},
-                    output_data={},
-                    duration_ms=int((_dt.now() - t0).total_seconds() * 1000),
-                    status="error", error=str(e)[:200],
-                ).to_jsonl())
-                raise
+                    span.set_output({"score": getattr(output, "score", None)})
+                    return output
+                except Exception as e:
+                    span.set_output({})
+                    span.error = str(e)[:200]
+                    span.status = "error"
+                    raise
 
         result = await self.scheduler.run(
             graph=graph,
@@ -195,11 +192,13 @@ class Executor:
         requested = list(input_data.get("stock_codes") or []) or self._requested_codes
         start_date = str(input_data.get("start_date", "20240101"))
         end_date = str(input_data.get("end_date", "20251231"))
+        as_of = input_data.get("as_of") or None
 
         dataset = await self.collector.collect(
             stock_codes=requested or None,
             start_date=start_date,
             end_date=end_date,
+            as_of=as_of,
         )
         self._dataset = dataset
         self._stocks = dataset.stocks()
@@ -256,12 +255,11 @@ class Executor:
 
     def trace_records(self) -> list[dict]:
         """Serialized tool-call trace (for tool_trace.jsonl)."""
-        return [r.to_jsonl() for r in self.collector.trace_records]
+        return list(self.collector.trace_records)
 
     def agent_trace_records(self) -> list[dict]:
         """Unified lifecycle trace: collector tool calls + skill executions."""
-        tool_records = [r.to_jsonl() for r in self.collector.trace_records]
-        return tool_records + list(self._agent_trace)
+        return list(self.collector.trace_records) + list(self._agent_trace)
 
     def get_graph_result(self) -> GraphResult | None:
         return self._last_graph_result

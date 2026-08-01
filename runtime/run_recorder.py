@@ -109,14 +109,25 @@ class RunRecorder:
     # ─── Mermaid graph helpers ──────────────────────────────────────────
 
     @staticmethod
-    def build_execution_graph(plan: dict, results: dict[str, Any]) -> str:
-        """Build a Mermaid flowchart from the plan steps + results.
+    def build_execution_graph(plan: dict, graph_result: Any) -> str:
+        """Build a Mermaid flowchart from the plan steps + real node results.
 
-        Nodes = analysis steps; edges = dependencies; status shown.
+        Nodes = analysis steps; edges = dependencies.
+        Status from the Scheduler's GraphResult: ✓ success / ✗ failed /
+        ! retried — not from plan status (which is always pending).
         """
         steps = plan.get("analysis_steps", [])
         if not steps:
             return ""
+
+        # Real per-node status from the scheduler
+        node_status: dict[str, dict] = {}
+        if graph_result is not None and hasattr(graph_result, "node_results"):
+            for nid, nr in graph_result.node_results.items():
+                node_status[nid] = {
+                    "success": getattr(nr, "success", True),
+                    "retries": getattr(nr, "retry_count", 0),
+                }
 
         lines = ["flowchart TD"]
         node_ids = {}
@@ -125,14 +136,19 @@ class RunRecorder:
         for s in steps:
             sid = s.get("id")
             skill = s.get("skill", "?")
-            status = s.get("status", "pending")
-            label = f"{sid}:{skill}"
-            if status == "completed":
-                label += " ✓"
-            elif status == "failed":
-                label += " ✗"
             nid = f"n{sid}"
             node_ids[sid] = nid
+
+            # Real status from graph result (keyed by "step-{id}")
+            actual = node_status.get(f"step-{sid}", {})
+            if actual.get("success") is False:
+                label = f"{sid}:{skill} ✗"
+            elif actual.get("retries", 0) > 0:
+                label = f"{sid}:{skill} !"
+            elif actual:  # present and success
+                label = f"{sid}:{skill} ✓"
+            else:
+                label = f"{sid}:{skill}"
             lines.append(f'    {nid}["{label}"]')
 
         # Step 2: edges from depends_on

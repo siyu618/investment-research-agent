@@ -169,8 +169,8 @@ async def run_research(requirement: str, args):
             "error": result.error or "",
             "hook_errors": harness.hook_error_count,
         },
-        agent_trace=_build_agent_trace(executor, requirement, harness),
-        graph_mmd=RunRecorder.build_execution_graph(plan_dict, {}),
+        agent_trace=await _build_agent_trace(executor, requirement, harness),
+        graph_mmd=RunRecorder.build_execution_graph(plan_dict, executor.get_graph_result()),
     )
     print(f"\n📁 运行记录已保存: runs/{run_id}/  (request/plan/tool_trace/agent_trace/data_snapshot/verification/report/execution_graph)")
 
@@ -232,25 +232,19 @@ def _plan_to_dict(plan: Any) -> dict:
         return {"note": str(plan)}
 
 
-def _build_agent_trace(executor: Any, requirement: str, harness: Any) -> list[dict]:
+async def _build_agent_trace(executor: Any, requirement: str, harness: Any) -> list[dict]:
     """Assemble the unified lifecycle trace for agent_trace.jsonl."""
-    from datetime import datetime as _dt
+    from runtime.tracing.trace_span import trace_span
 
     entries: list[dict] = []
 
-    from runtime.snapshot import hash_of
-
-    # Planner (from harness last_plan)
+    # Planner (from harness last_plan) — real duration via trace_span
     plan_dict = _plan_to_dict(harness.last_plan)
-    entries.append({
-        "run_id": executor.run_id, "step_id": "planner", "kind": "planner",
-        "name": "Planner", "status": "ok",
-        "input_summary": requirement[:200], "input_hash": hash_of(requirement),
-        "output_summary": plan_dict.get("objective", ""),
-        "output_hash": hash_of(plan_dict),
-        "output_size": len(plan_dict), "duration_ms": 0, "retry_count": 0,
-        "error": "", "token_usage": {}, "timestamp": _dt.now().isoformat(),
-    })
+    async with trace_span(
+        executor.run_id, "planner", "planner", "Planner", sink=entries,
+    ) as span:
+        span.set_input(requirement)
+        span.set_output(plan_dict)
 
     # Skill + tool entries from executor
     entries.extend(executor.agent_trace_records())
@@ -259,33 +253,22 @@ def _build_agent_trace(executor: Any, requirement: str, harness: Any) -> list[di
     verification = harness.last_verification
     if verification is not None:
         v_dict = verification.to_dict()
-        entries.append({
-            "run_id": executor.run_id, "step_id": "verifier", "kind": "verifier",
-            "name": "Verifier",
-            "status": "ok" if verification.passed else "failed",
-            "input_summary": f"policy={verification.policy_mode}",
-            "input_hash": "",
-            "output_summary": f"passed={verification.passed} "
-                              f"checks={len(verification.checks)} "
-                              f"warnings={len(verification.warnings)} "
-                              f"errors={len(verification.errors)}",
-            "output_hash": hash_of(v_dict),
-            "output_size": len(verification.checks),
-            "duration_ms": 0, "retry_count": 0,
-            "error": "; ".join(verification.errors[:2]),
-            "token_usage": {}, "timestamp": _dt.now().isoformat(),
-        })
+        async with trace_span(
+            executor.run_id, "verifier", "verifier", "Verifier", sink=entries,
+        ) as span:
+            span.set_input({"policy": verification.policy_mode,
+                            "results_count": getattr(verification, "check_count", 0)})
+            span.set_output(v_dict)
+            if not verification.passed:
+                span.status = "failed"
+                span.error = "; ".join(verification.errors[:2])
     else:
-        entries.append({
-            "run_id": executor.run_id, "step_id": "verifier", "kind": "verifier",
-            "name": "Verifier", "status": "failed",
-            "input_summary": "", "input_hash": "",
-            "output_summary": "verification did not complete",
-            "output_hash": "", "output_size": 0,
-            "duration_ms": 0, "retry_count": 0,
-            "error": "pipeline failed before verification",
-            "token_usage": {}, "timestamp": _dt.now().isoformat(),
-        })
+        async with trace_span(
+            executor.run_id, "verifier", "verifier", "Verifier", sink=entries,
+        ) as span:
+            span.status = "failed"
+            span.error = "pipeline failed before verification"
+            span.set_output({"note": "verification did not complete"})
     return entries
 
 

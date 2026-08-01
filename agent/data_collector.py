@@ -3,7 +3,7 @@
 # Skills must never call a provider. The Data Collector:
 #   1. Reads stocks / prices / financials / valuation from the provider
 #   2. Wraps everything in a ResearchDataset of DataSnapshots
-#   3. Records per-call provenance + trace records for the run
+#   3. Records per-call provenance via trace_span (real duration + hash)
 #
 # The ResearchDataset is immutable → replayable, point-in-time.
 
@@ -13,7 +13,7 @@ from datetime import datetime
 
 from runtime.run_recorder import RunRecorder
 from runtime.snapshot import DataSnapshot, ResearchDataset
-from runtime.tracing.agent_trace import TraceRecord
+from runtime.tracing.trace_span import trace_span
 from tools.providers import MarketDataProvider, StockBasic
 
 
@@ -29,10 +29,10 @@ class DataCollector:
         self._provider = provider
         self._recorder = recorder
         self._run_id = run_id
-        self._trace: list[TraceRecord] = []
+        self._trace: list[dict] = []
 
     @property
-    def trace_records(self) -> list[TraceRecord]:
+    def trace_records(self) -> list[dict]:
         return self._trace
 
     async def collect(
@@ -50,8 +50,12 @@ class DataCollector:
         recorded as degraded traces but do not fail the run.
         """
         stocks = await self._fetch_stocks(stock_codes)
-        prices = await self._fetch_prices(stocks, start_date, end_date)
-        financials = await self._fetch_financials(stocks, start_date, end_date) if load_financials else {}
+        prices = await self._fetch_prices(stocks, start_date, end_date, as_of)
+        financials = (
+            await self._fetch_financials(stocks, start_date, end_date, as_of)
+            if load_financials
+            else {}
+        )
         valuation = await self._fetch_valuation(stocks) if load_valuation else {}
 
         snapshot = DataSnapshot.build(
@@ -76,91 +80,95 @@ class DataCollector:
 
     async def _fetch_stocks(self, stock_codes: list[str] | None) -> list[StockBasic]:
         """Fetch stock universe. Degrades to code stubs for single-stock."""
-        try:
-            if stock_codes:
-                stocks = await self._provider.get_stock_basic(ts_codes=stock_codes)
-            else:
-                stocks = await self._provider.get_stock_basic()
-            self._trace.append(TraceRecord.make(
-                run_id=self._run_id, step_id="data-collector", kind="tool",
-                name="get_stock_basic",
-                input_data={"stock_codes": stock_codes or None},
-                output_data=[s.ts_code for s in stocks],
-                duration_ms=0,
-            ))
-            return stocks
-        except Exception as e:
-            # Degrade: for explicit codes we can still analyse prices/valuation
-            if stock_codes:
-                stubs = [StockBasic(ts_code=c, name=c, industry="") for c in stock_codes]
-                self._trace.append(TraceRecord.make(
-                    run_id=self._run_id, step_id="data-collector", kind="tool",
-                    name="get_stock_basic",
-                    input_data={"stock_codes": stock_codes},
-                    output_data={"note": f"degraded: {e}"},
-                    status="error", error=str(e)[:200],
-                ))
-                return stubs
-            raise
+        async with trace_span(
+            self._run_id, "data-collector", "tool", "get_stock_basic",
+            sink=self._trace,
+        ) as span:
+            span.set_input({"stock_codes": stock_codes or None})
+            try:
+                if stock_codes:
+                    stocks = await self._provider.get_stock_basic(ts_codes=stock_codes)
+                else:
+                    stocks = await self._provider.get_stock_basic()
+                span.set_output([s.ts_code for s in stocks])
+                return stocks
+            except Exception as e:
+                # Degrade: for explicit codes we can still analyse prices/valuation
+                if stock_codes:
+                    stubs = [StockBasic(ts_code=c, name=c, industry="") for c in stock_codes]
+                    span.set_output({"note": f"degraded: {e}"})
+                    span.status = "error"
+                    span.error = str(e)[:200]
+                    return stubs
+                raise
 
     async def _fetch_prices(
-        self, stocks: list[StockBasic], start_date: str, end_date: str
+        self,
+        stocks: list[StockBasic],
+        start_date: str,
+        end_date: str,
+        as_of: str | None = None,
     ) -> dict[str, list]:
-        """Fetch daily prices for all stocks (parallel where possible)."""
+        """Fetch daily prices for all stocks, filtering by as_of (PIT)."""
         import asyncio
 
         async def one(s: StockBasic) -> tuple[str, list]:
-            try:
-                rows = await self._provider.get_daily_price(
-                    s.ts_code, start_date, end_date)
-                self._trace.append(TraceRecord.make(
-                    run_id=self._run_id, step_id="data-collector", kind="tool",
-                    name="get_daily_price",
-                    input_data={"ts_code": s.ts_code},
-                    output_data={"rows": len(rows)},
-                    duration_ms=0,
-                ))
-                return s.ts_code, [r.__dict__ for r in rows]
-            except Exception as e:
-                self._trace.append(TraceRecord.make(
-                    run_id=self._run_id, step_id="data-collector", kind="tool",
-                    name="get_daily_price",
-                    input_data={"ts_code": s.ts_code},
-                    output_data={},
-                    status="error", error=str(e)[:200],
-                ))
-                return s.ts_code, []
+            async with trace_span(
+                self._run_id, "data-collector", "tool", "get_daily_price",
+                sink=self._trace,
+            ) as span:
+                span.set_input({"ts_code": s.ts_code})
+                try:
+                    rows = await self._provider.get_daily_price(
+                        s.ts_code, start_date, end_date)
+                    filtered = [
+                        r for r in rows
+                        if not as_of or r.trade_date <= as_of.replace("-", "")
+                    ]
+                    span.set_output({"rows": len(rows), "kept": len(filtered)})
+                    return s.ts_code, [r.__dict__ for r in filtered]
+                except Exception as e:
+                    span.status = "error"
+                    span.error = str(e)[:200]
+                    span.set_output({})
+                    return s.ts_code, []
 
         results = await asyncio.gather(*(one(s) for s in stocks))
         return {code: rows for code, rows in results}
 
     async def _fetch_financials(
-        self, stocks: list[StockBasic], start_date: str, end_date: str
+        self,
+        stocks: list[StockBasic],
+        start_date: str,
+        end_date: str,
+        as_of: str | None = None,
     ) -> dict[str, list]:
-        """Fetch financial statements (income/balance/cashflow merged)."""
+        """Fetch financial statements, filtering by ann_date <= as_of (PIT)."""
         import asyncio
 
         async def one(s: StockBasic) -> tuple[str, list]:
-            try:
-                rows = await self._provider.get_financial_summary(
-                    s.ts_code, start_date, end_date)
-                self._trace.append(TraceRecord.make(
-                    run_id=self._run_id, step_id="data-collector", kind="tool",
-                    name="get_financial_summary",
-                    input_data={"ts_code": s.ts_code},
-                    output_data={"periods": len(rows)},
-                    duration_ms=0,
-                ))
-                return s.ts_code, [r.__dict__ for r in rows]
-            except Exception as e:
-                self._trace.append(TraceRecord.make(
-                    run_id=self._run_id, step_id="data-collector", kind="tool",
-                    name="get_financial_summary",
-                    input_data={"ts_code": s.ts_code},
-                    output_data={},
-                    status="error", error=str(e)[:200],
-                ))
-                return s.ts_code, []
+            async with trace_span(
+                self._run_id, "data-collector", "tool", "get_financial_summary",
+                sink=self._trace,
+            ) as span:
+                span.set_input({"ts_code": s.ts_code})
+                try:
+                    rows = await self._provider.get_financial_summary(
+                        s.ts_code, start_date, end_date)
+                    # PIT: keep only records disclosed by as_of
+                    filtered = []
+                    for r in rows:
+                        ann = getattr(r, "ann_date", "") or ""
+                        if as_of and ann and ann > as_of.replace("-", ""):
+                            continue
+                        filtered.append(r)
+                    span.set_output({"periods": len(rows), "kept": len(filtered)})
+                    return s.ts_code, [r.__dict__ for r in filtered]
+                except Exception as e:
+                    span.status = "error"
+                    span.error = str(e)[:200]
+                    span.set_output({})
+                    return s.ts_code, []
 
         results = await asyncio.gather(*(one(s) for s in stocks))
         return {code: rows for code, rows in results}
@@ -170,25 +178,20 @@ class DataCollector:
         import asyncio
 
         async def one(s: StockBasic) -> tuple[str, dict]:
-            try:
-                val = await self._provider.get_valuation(s.ts_code)
-                self._trace.append(TraceRecord.make(
-                    run_id=self._run_id, step_id="data-collector", kind="tool",
-                    name="get_valuation",
-                    input_data={"ts_code": s.ts_code},
-                    output_data=val,
-                    duration_ms=0,
-                ))
-                return s.ts_code, val or {}
-            except Exception as e:
-                self._trace.append(TraceRecord.make(
-                    run_id=self._run_id, step_id="data-collector", kind="tool",
-                    name="get_valuation",
-                    input_data={"ts_code": s.ts_code},
-                    output_data={},
-                    status="error", error=str(e)[:200],
-                ))
-                return s.ts_code, {}
+            async with trace_span(
+                self._run_id, "data-collector", "tool", "get_valuation",
+                sink=self._trace,
+            ) as span:
+                span.set_input({"ts_code": s.ts_code})
+                try:
+                    val = await self._provider.get_valuation(s.ts_code)
+                    span.set_output(val or {})
+                    return s.ts_code, val or {}
+                except Exception as e:
+                    span.status = "error"
+                    span.error = str(e)[:200]
+                    span.set_output({})
+                    return s.ts_code, {}
 
         results = await asyncio.gather(*(one(s) for s in stocks))
         return {code: val for code, val in results}
