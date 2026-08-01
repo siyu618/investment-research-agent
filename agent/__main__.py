@@ -154,6 +154,7 @@ async def run_research(requirement: str, args):
         "checks": [], "warnings": [],
         "errors": ["Verification did not complete (pipeline failed earlier)"],
     }
+    result_manifest = _build_result_manifest(result, verification_dict)
     recorder.save_full_run(
         run_id=run_id,
         request={"requirement": requirement, "provider": args.provider},
@@ -171,6 +172,7 @@ async def run_research(requirement: str, args):
         },
         agent_trace=await _build_agent_trace(executor, requirement, harness),
         graph_mmd=RunRecorder.build_execution_graph(plan_dict, executor.get_graph_result()),
+        result_manifest=result_manifest,
         execution_outputs=executor.execution_outputs(),
     )
     print(f"\n📁 运行记录已保存: runs/{run_id}/  (request/plan/tool_trace/agent_trace/data_snapshot/verification/report/execution_graph/execution_outputs)")
@@ -231,6 +233,51 @@ def _plan_to_dict(plan: Any) -> dict:
         return d
     except Exception:
         return {"note": str(plan)}
+
+
+def _build_result_manifest(result: Any, verification_dict: dict) -> dict:
+    """Standardized business results for Replay comparison.
+
+    Includes candidate ranking/order/scores, portfolio suggestion,
+    verification, and a report content hash — NOT the raw Markdown.
+    """
+    from runtime.snapshot import hash_of
+
+    candidates = []
+    if result.success and result.output:
+        for c in getattr(result.output, "candidates", []):
+            candidates.append({
+                "ts_code": getattr(c, "ts_code", ""),
+                "name": getattr(c, "name", ""),
+                "industry": getattr(c, "industry", ""),
+                "fundamental_score": getattr(c, "fundamental_score", 0),
+                "val_score": getattr(c, "val_score", 0),
+                "risk_score": getattr(c, "risk_score", 0),
+                "composite_score": getattr(c, "composite_score", 0),
+            })
+        portfolio = getattr(result.output, "portfolio_suggestion", "")
+    else:
+        portfolio = ""
+
+    # Candidate order + composite scores (sorted by rank, as generated)
+    ordered = [
+        {"ts_code": c["ts_code"], "composite_score": c["composite_score"]}
+        for c in candidates
+    ]
+
+    manifest = {
+        "schema_version": "1.0.0",
+        "candidates": candidates,
+        "candidate_order": ordered,
+        "portfolio_suggestion": portfolio,
+        "verification": verification_dict,
+        "report_content_hash": hash_of({
+            "candidate_order": ordered,
+            "portfolio": portfolio,
+            "verification": verification_dict,
+        }),
+    }
+    return manifest
 
 
 async def _build_agent_trace(executor: Any, requirement: str, harness: Any) -> list[dict]:

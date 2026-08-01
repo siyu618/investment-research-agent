@@ -12,11 +12,13 @@ from tools.providers import MockMarketDataProvider
 
 
 async def _run_and_capture(requirement: str, tmp_path) -> str:
-    """Run the agent pipeline against mock provider, save run to tmp_path,
-    return the run dir path."""
+    """Run the agent pipeline against mock provider and save ALL run
+    artifacts (execution_outputs, result_manifest, manifest) to tmp_path.
+    Returns the run dir path."""
+    from runtime.snapshot import hash_of
+
     run_id = "test-run-1"
     recorder = RunRecorder(runs_dir=str(tmp_path))
-    run_dir = recorder.create_run(run_id)
 
     planner = Planner()
     executor = Executor(provider=MockMarketDataProvider(), run_id=run_id)
@@ -38,23 +40,72 @@ async def _run_and_capture(requirement: str, tmp_path) -> str:
     }
     # Run executor with real mock provider
     await executor.execute_plan(plan)
-    # Persist artifacts needed for replay
-    recorder.write_json(run_id, "plan.json", plan_dict)
-    recorder.write_json(run_id, "request.json",
-                        {"requirement": requirement, "provider": "mock"})
-    recorder.write_json(run_id, "data_snapshot.json", {
-        "slice_count": len(executor.snapshot_records()),
-        "as_of": executor.snapshot_records()[0].get("as_of", "") if executor.snapshot_records() else "",
-        "slices": executor.snapshot_records(),
-    })
-    # Per-node outputs for deterministic replay comparison
-    recorder.write_json(run_id, "execution_outputs.json", executor.execution_outputs())
-    # Report with the expected structural sections (replay compares these)
-    recorder.write_text(
-        run_id, "report.md",
-        "# 报告\n\n## 三、候选股票评分及排名\n\n## 四、组合建议\n\n## 免责声明\n",
+
+    # Build a minimal verification (real Verifier) + report-like result
+    from agent.verifier import Verifier
+    from strategies.base.models import AnalysisPlan, AnalysisStep
+
+    exec_results = executor._last_graph_result
+    results_dict = {
+        nid: nr.output for nid, nr in exec_results.node_results.items()
+    } if exec_results else {}
+
+    # Minimal AnalysisPlan for the verifier
+    verifier_plan = AnalysisPlan(
+        objective=plan_dict["objective"],
+        strategy_weights=plan_dict["strategy_weights"],
+        data_requirements=plan_dict["data_requirements"],
+        analysis_steps=[
+            AnalysisStep(id=s["id"], skill=s["skill"], target=s["target"],
+                         depends_on=s["depends_on"], params=s["params"])
+            for s in plan_dict["analysis_steps"]
+        ],
+        risk_preference=plan_dict["risk_preference"],
     )
-    return str(run_dir)
+    verification = await Verifier("standard").verify(verifier_plan, results_dict)
+
+    # Generate a real report so candidate_order/portfolio match Replay's view
+    from agent.report_generator import ReportGenerator
+
+    report = await ReportGenerator().generate(
+        verifier_plan, results_dict, verification)
+    candidates = []
+    for c in getattr(report, "candidates", []):
+        candidates.append({
+            "ts_code": getattr(c, "ts_code", ""),
+            "composite_score": getattr(c, "composite_score", 0),
+        })
+    portfolio = getattr(report, "portfolio_suggestion", "")
+
+    result_manifest = {
+        "schema_version": "1.0.0",
+        "candidates": candidates,
+        "candidate_order": candidates,
+        "portfolio_suggestion": portfolio,
+        "verification": verification.to_dict(),
+        "report_content_hash": hash_of({
+            "candidate_order": candidates,
+            "portfolio": portfolio,
+            "verification": verification.to_dict(),
+        }),
+    }
+
+    report_md = ReportGenerator().format_markdown(report)
+    recorder.save_full_run(
+        run_id=run_id,
+        request={"requirement": requirement, "provider": "mock"},
+        plan=plan_dict,
+        tool_trace=executor.trace_records(),
+        snapshots=executor.snapshot_records(),
+        verification=verification.to_dict(),
+        report_md=report_md,
+        meta={"status": "success", "duration_ms": 0, "event_count": 0,
+              "error": "", "hook_errors": 0},
+        agent_trace=executor.agent_trace_records(),
+        execution_outputs=executor.execution_outputs(),
+        result_manifest=result_manifest,
+    )
+    return str(recorder.runs_dir / run_id)
 
 
 class TestForbiddenProvider:

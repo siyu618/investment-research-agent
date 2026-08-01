@@ -1,19 +1,64 @@
 # Run Recorder — persists every agent run for audit, replay, and debugging
 #
 # Writes to runs/{run_id}/:
-#   request.json       — original user requirement + parsed InvestmentRequest
-#   plan.json          — the AnalysisPlan (steps, weights, params)
-#   tool_trace.jsonl   — one JSON object per tool call (inputs/outputs-hash, latency, retries)
-#   data_snapshot.json — all DataSnapshots consumed during the run
-#   verification.json  — Verifier result (checks, warnings, errors)
-#   report.md          — final Markdown report
-#   meta.json          — run metadata (status, duration, event count)
+#   manifest.json          — artifact list + hashes + schema versions (Replay gate)
+#   request.json           — original user requirement + parsed InvestmentRequest
+#   plan.json              — the AnalysisPlan (steps, weights, params)
+#   tool_trace.jsonl       — one JSON object per tool call (inputs/outputs-hash, latency, retries)
+#   agent_trace.jsonl      — unified lifecycle trace
+#   data_snapshot.json     — all DataSnapshots consumed during the run
+#   execution_outputs.json — per-DAG-node outputs + hashes
+#   result_manifest.json   — standardized business results (candidates, verification)
+#   verification.json      — Verifier result (checks, warnings, errors)
+#   execution_graph.mmd    — Mermaid flowchart
+#   report.md              — final Markdown report
+#   meta.json              — run metadata (status, duration, event count)
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
 from typing import Any
+
+from runtime.snapshot import hash_of
+
+# Schema versions — bump when a file's shape changes so old runs remain
+# distinguishable from incompatible new ones.
+SCHEMA_VERSIONS = {
+    "manifest.json": "1.0.0",
+    "request.json": "1.0.0",
+    "plan.json": "1.0.0",
+    "data_snapshot.json": "2.0.0",
+    "execution_outputs.json": "1.0.0",
+    "result_manifest.json": "1.0.0",
+    "verification.json": "1.0.0",
+    "agent_trace.jsonl": "1.0.0",
+    "tool_trace.jsonl": "1.0.0",
+}
+
+
+def _now_iso() -> str:
+    from datetime import datetime
+
+    return datetime.now().isoformat()
+
+
+def _artifact_purpose(fname: str) -> str:
+    """Short purpose description for each run artifact."""
+    purposes = {
+        "request.json": "original user requirement + provider",
+        "plan.json": "structured analysis plan",
+        "data_snapshot.json": "point-in-time data snapshots",
+        "execution_outputs.json": "per-DAG-node outputs + hashes (Replay)",
+        "result_manifest.json": "standardized business results (Replay)",
+        "verification.json": "verifier checks + policy + blocked",
+        "agent_trace.jsonl": "unified lifecycle trace",
+        "tool_trace.jsonl": "tool-call granularity trace",
+        "report.md": "final markdown report",
+        "meta.json": "run metadata",
+        "execution_graph.mmd": "mermaid execution flowchart",
+    }
+    return purposes.get(fname, "run artifact")
 
 
 class RunRecorder:
@@ -68,6 +113,7 @@ class RunRecorder:
         agent_trace: list[dict] | None = None,
         graph_mmd: str = "",
         execution_outputs: dict | None = None,
+        result_manifest: dict | None = None,
     ) -> Path:
         """Write all standard artifacts for a run. Returns run dir.
 
@@ -75,6 +121,7 @@ class RunRecorder:
           - agent_trace:        unified lifecycle trace (planner/skill/tool/verifier/llm)
           - graph_mmd:          Mermaid execution flowchart
           - execution_outputs:  per-DAG-node outputs + hashes (for Replay)
+          - result_manifest:    standardized business results (for Replay)
         """
         run_dir = self.create_run(run_id)
 
@@ -110,7 +157,35 @@ class RunRecorder:
         if execution_outputs:
             self.write_json(run_id, "execution_outputs.json", execution_outputs)
 
+        # result_manifest.json — standardized business results (for Replay)
+        if result_manifest:
+            self.write_json(run_id, "result_manifest.json", result_manifest)
+
+        # manifest.json — artifact list + hashes + schema versions (Replay gate)
+        self._write_manifest(run_id, run_dir)
+
         return run_dir
+
+    def _write_manifest(self, run_id: str, run_dir: Path) -> None:
+        """Compute per-artifact hashes and write manifest.json."""
+        artifacts: dict[str, dict] = {}
+        for fname in sorted(p.name for p in run_dir.iterdir() if p.is_file()):
+            if fname == "manifest.json":
+                continue
+            raw = (run_dir / fname).read_bytes()
+            artifacts[fname] = {
+                "sha256": hash_of(raw.decode("utf-8", errors="replace")),
+                "size_bytes": len(raw),
+                "schema_version": SCHEMA_VERSIONS.get(fname, "1.0.0"),
+                "purpose": _artifact_purpose(fname),
+            }
+        manifest = {
+            "manifest_version": "1.0.0",
+            "run_id": run_id,
+            "created_at": _now_iso(),
+            "artifacts": artifacts,
+        }
+        self.write_json(run_id, "manifest.json", manifest)
 
     # ─── Mermaid graph helpers ──────────────────────────────────────────
 

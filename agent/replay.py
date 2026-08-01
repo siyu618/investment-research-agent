@@ -64,6 +64,65 @@ def plan_from_dict(d: dict) -> AnalysisPlan:
     )
 
 
+REQUIRED_ARTIFACTS = [
+    "manifest.json",
+    "request.json",
+    "plan.json",
+    "data_snapshot.json",
+    "execution_outputs.json",
+]
+
+MANIFEST_SCHEMA = "1.0.0"
+
+
+def _check_artifacts(run_dir: Path) -> dict:
+    """Validate manifest + required artifacts before replay.
+
+    Returns {"ok": True} or a failing report with the reason.
+    """
+    missing = [a for a in REQUIRED_ARTIFACTS if not (run_dir / a).exists()]
+    if missing:
+        return {
+            "status": "artifact_missing",
+            "ok": False,
+            "reason": f"required artifact(s) missing: {missing}",
+        }
+
+    # Manifest schema version
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    if manifest.get("manifest_version") != MANIFEST_SCHEMA:
+        return {
+            "status": "artifact_missing",
+            "ok": False,
+            "reason": f"unsupported manifest_version "
+                      f"{manifest.get('manifest_version')} (expected {MANIFEST_SCHEMA})",
+        }
+
+    # Per-artifact hash vs manifest (detect tampering / corruption)
+    tampered = []
+    for fname, info in (manifest.get("artifacts") or {}).items():
+        fpath = run_dir / fname
+        if not fpath.exists():
+            continue
+        actual_hash = hash_of(fpath.read_text(encoding="utf-8"))
+        if info.get("sha256") and actual_hash != info["sha256"]:
+            tampered.append(fname)
+    if tampered:
+        return {
+            "status": "artifact_missing",
+            "ok": False,
+            "reason": f"artifact hash mismatch (tampered/corrupted): {tampered}",
+        }
+
+    # execution_outputs schema version
+    exec_outputs = json.loads((run_dir / "execution_outputs.json").read_text())
+    if isinstance(exec_outputs, dict) and exec_outputs.get("schema_version") == "missing":
+        return {"status": "artifact_missing", "ok": False,
+                "reason": "execution_outputs schema unsupported"}
+
+    return {"status": "ok", "ok": True}
+
+
 async def run_full_replay(run_dir: Path) -> dict:
     """Deterministic Replay Verification.
 
@@ -71,16 +130,26 @@ async def run_full_replay(run_dir: Path) -> dict:
     against the original run's execution_outputs.json, plus snapshot/plan
     hashes, candidate ranking, verification, and report structure.
     Produces a detailed diff for any mismatch.
+
+    Artifact gate: if manifest.json or execution_outputs.json is missing,
+    or an artifact hash fails against the manifest, returns artifact_missing
+    instead of silently passing.
     """
     from agent.executor import Executor
     from agent.report_generator import ReportGenerator
 
+    # 0. Artifact integrity gate (manifest + required files)
+    gate = _check_artifacts(run_dir)
+    if gate["ok"] is not True:
+        return gate
+
     # 1. Load artifacts
     snap = json.loads((run_dir / "data_snapshot.json").read_text())
     plan_dict = json.loads((run_dir / "plan.json").read_text())
-    orig_exec_outputs = {}
-    if (run_dir / "execution_outputs.json").exists():
-        orig_exec_outputs = json.loads((run_dir / "execution_outputs.json").read_text())
+    orig_exec_outputs = json.loads((run_dir / "execution_outputs.json").read_text())
+    orig_result_manifest = {}
+    if (run_dir / "result_manifest.json").exists():
+        orig_result_manifest = json.loads((run_dir / "result_manifest.json").read_text())
 
     # 2. Rebuild dataset + plan
     dataset = ResearchDataset.from_dict(snap)
@@ -135,15 +204,74 @@ async def run_full_replay(run_dir: Path) -> dict:
     snapshot_match = replay_snapshot_hashes == orig_snapshot_hashes
     plan_match = replay_plan_hash == orig_plan_hash
 
-    # 7. Candidate ranking from the report
-    candidates = []
-    for c in getattr(report, "candidates", []):
-        candidates.append({
-            "ts_code": getattr(c, "ts_code", ""),
-            "composite_score": getattr(c, "composite_score", 0),
-        })
+    # 7. Business results comparison against result_manifest.json
+    result_diffs: list[str] = []
+    result_checks: dict[str, dict] = {}
+    if orig_result_manifest:
+        # 7a. Candidate order + composite scores
+        replay_candidates = []
+        for c in getattr(report, "candidates", []):
+            replay_candidates.append({
+                "ts_code": getattr(c, "ts_code", ""),
+                "composite_score": getattr(c, "composite_score", 0),
+            })
+        orig_order = orig_result_manifest.get("candidate_order", [])
+        order_match = replay_candidates == orig_order
+        result_checks["candidate_order"] = {
+            "expected": orig_order,
+            "actual": replay_candidates,
+            "match": order_match,
+        }
+        if not order_match:
+            result_diffs.append(
+                f"candidate order/score mismatch "
+                f"(expected {len(orig_order)} ranked, got {len(replay_candidates)})"
+            )
 
-    # 8. Report structure
+        # 7b. Verification result comparison
+        orig_verification = orig_result_manifest.get("verification", {})
+        replay_verification = verification.to_dict()
+        verification_match = (
+            orig_verification.get("passed") == replay_verification.get("passed")
+            and orig_verification.get("policy_mode") == replay_verification.get("policy_mode")
+        )
+        result_checks["verification"] = {
+            "expected": orig_verification,
+            "actual": replay_verification,
+            "match": verification_match,
+        }
+        if not verification_match:
+            result_diffs.append("verification result mismatch")
+
+        # 7c. Portfolio suggestion (standardized string)
+        orig_portfolio = orig_result_manifest.get("portfolio_suggestion", "")
+        replay_portfolio = getattr(report, "portfolio_suggestion", "")
+        portfolio_match = orig_portfolio == replay_portfolio
+        result_checks["portfolio_suggestion"] = {
+            "expected": orig_portfolio,
+            "actual": replay_portfolio,
+            "match": portfolio_match,
+        }
+        if not portfolio_match:
+            result_diffs.append("portfolio suggestion mismatch")
+
+        # 7d. Report content hash (over structured facts, not Markdown)
+        orig_rep_hash = orig_result_manifest.get("report_content_hash", "")
+        replay_rep_hash = hash_of({
+            "candidate_order": replay_candidates,
+            "portfolio": replay_portfolio,
+            "verification": replay_verification,
+        })
+        report_content_match = bool(orig_rep_hash) and orig_rep_hash == replay_rep_hash
+        result_checks["report_content_hash"] = {
+            "expected": orig_rep_hash,
+            "actual": replay_rep_hash,
+            "match": report_content_match,
+        }
+        if not report_content_match:
+            result_diffs.append("report content hash mismatch")
+
+    # 8. Report structure (section presence — secondary, not primary)
     orig_report = run_dir / "report.md"
     orig_report_has_sections = False
     if orig_report.exists():
@@ -157,7 +285,7 @@ async def run_full_replay(run_dir: Path) -> dict:
     )
 
     # 9. Aggregate diffs
-    diffs: list[str] = list(node_diffs)
+    diffs: list[str] = list(node_diffs) + list(result_diffs)
     if not snapshot_match:
         diffs.append("snapshot_hash mismatch")
     if not plan_match:
@@ -166,7 +294,8 @@ async def run_full_replay(run_dir: Path) -> dict:
         diffs.append("report sections mismatch")
 
     all_match = (
-        snapshot_match and plan_match and report_sections_match and not node_diffs
+        snapshot_match and plan_match and report_sections_match
+        and not node_diffs and not result_diffs
     )
 
     checks = {
@@ -181,13 +310,8 @@ async def run_full_replay(run_dir: Path) -> dict:
             "match": plan_match,
         },
         "node_outputs": node_checks,
-        "verification": {
-            "passed": verification.passed,
-            "policy_mode": verification.policy_mode,
-            "checks": verification.checks,
-            "errors": verification.errors,
-        },
-        "candidate_count": len(candidates),
+        "result_manifest": result_checks,
+        "candidate_count": len(getattr(report, "candidates", [])),
         "report_sections_present": report_sections_match,
         "provider_access_attempted": len(forbidden.calls),
     }
