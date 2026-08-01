@@ -99,6 +99,19 @@ class TestFullReplay:
         assert verification["checks"]["plan_hash"]["match"] is True
 
     @pytest.mark.asyncio
+    async def test_replay_node_outputs_match(self, tmp_path):
+        """Every real skill node's output hash must match the original."""
+        run_dir_path = await _run_and_capture("分析 600519.SH", tmp_path)
+        import pathlib
+        verification = await run_full_replay(pathlib.Path(run_dir_path))
+        node_checks = verification["checks"]["node_outputs"]
+        assert node_checks, "expected node_outputs comparison"
+        for nid, chk in node_checks.items():
+            assert chk["match"] is True, (
+                f"node {nid} output mismatch: {chk}"
+            )
+
+    @pytest.mark.asyncio
     async def test_replay_forbids_provider(self, tmp_path):
         """Replay must never call the provider."""
         run_dir_path = await _run_and_capture("分析 600519.SH", tmp_path)
