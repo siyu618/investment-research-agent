@@ -40,6 +40,20 @@ report.md             最终 Markdown 报告
 meta.json             运行元信息（状态/耗时/事件数/错误）
 ```
 
+## Replay 验证
+
+```bash
+# 跑一次完整 run
+python -m agent --requirement "分析 600519.SH"
+R=$(ls -t runs/ | head -1)
+
+# 完整 DAG Replay：恢复 request/plan/snapshot，按原 DAG 重放全部节点
+python -m agent --replay "runs/$R"
+# 期望输出：状态 PASSED，Provider 访问尝试 0 次，快照/计划 hash 一致
+```
+
+Replay 期间通过 `ForbiddenProvider` 禁止任何外部数据访问（任何 Provider 调用立即抛错）。执行后自动对比 Snapshot hash、Plan hash、候选数量、报告结构，结果写入 `runs/{run_id}/replay_verification.json`；不一致时标记 `failed` 并列出差异。
+
 ---
 
 ## 系统架构
@@ -91,8 +105,8 @@ meta.json             运行元信息（状态/耗时/事件数/错误）
 | **Planner** | LLM 结构化解析（受控）+ 规则回退；支持中英文、股票代码识别 |
 | **DAG Scheduler** | 自动拓扑排序 + 并行执行独立 Skill |
 | **Provider 隔离** | DataCollector 独占 Provider；Skills 只消费 ResearchDataset |
-| **DataSnapshot** | 完整点时间快照（stocks/prices/financials/valuation + as_of/publish/effective/trade_date） |
-| **Replay** | `python -m agent --replay runs/{run_id}` 基于快照确定性复现 |
+| **DataSnapshot** | 真正不可变快照（深层冻结为 tuple/只读 Mapping，防修改有测试）；完整 PIT 字段（as_of + 每条记录的 ann_date/trade_date）；DataCollector 按 as_of 过滤未来数据 |
+| **Replay** | `python -m agent --replay runs/{run_id}` 完整 DAG 重放（禁 Provider，等价性校验有测试） |
 | **Mock Provider** | sha256 稳定数据 + 真实交易日历 + growth/value/cyclical/abnormal 四画像 |
 | **Tushare Provider** | 真实实现；已验证 daily/daily_basic；权限/限频优雅降级 |
 | **基本面分析** | ROE、营收/利润增长、现金流质量、负债率、毛利率（含 provenance） |
@@ -132,7 +146,7 @@ meta.json             运行元信息（状态/耗时/事件数/错误）
 # 安装开发依赖
 pip install -e ".[dev]"
 
-# 运行全部测试（当前 237 个）
+# 运行全部测试（当前 267 个）
 pytest tests/
 
 # 静态检查
@@ -241,7 +255,7 @@ runs/                     # 运行时产物（gitignored）
 ## 测试
 
 ```bash
-# 全部 237 个测试
+# 全部 267 个测试
 pytest tests/
 
 # 确定性指标计算
@@ -269,7 +283,9 @@ pytest tests/runtime/
 
 - [设计文档](docs/design.md)
 - [演进路线图](docs/evolutionary-roadmap.md)
-- [ADR-001~011](docs/adr/)
+- [ADR-001~013](docs/adr/)
+  - ADR-012: 统一 trace_span 可观测性
+  - ADR-013: Point-in-Time 数据字段 + as_of 过滤
 - [评估框架](evaluations/README.md)
 - [可复现案例](evaluations/cases/README.md)
 - [Tushare 真实验证](evaluations/cases/tushare_live_validation.md)
