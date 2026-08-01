@@ -1,8 +1,8 @@
 # Tushare Investment Research Agent
 
-An AI Agent system for automated investment research, built as a **reference implementation** of the [engineering-ai-standards](engineering-ai-standards/) agent framework. It demonstrates a bounded, observable, reproducible research workflow: requirement parsing → DAG scheduling → skill-based multi-strategy analysis → verification → Markdown report.
+An AI Agent system for automated investment research, built as a **reference implementation** of the [engineering-ai-standards](engineering-ai-standards/) agent framework. It demonstrates a **bounded, observable, reproducible, replayable** research workflow: requirement parsing → DAG scheduling → skill-based multi-strategy analysis → verification → Markdown report — with every run fully auditable.
 
-> ⚠️ **免责声明**：本系统生成的报告仅供研究参考，不构成投资建议。默认使用 Mock 模拟数据；接入真实 TuShare 数据需要 API Token。策略回测为实验性，未经过严格 point-in-time / 成本 / 幸存者偏差处理。
+> ⚠️ **免责声明**：本系统生成的报告仅供研究参考，不构成投资建议。默认使用 Mock 模拟数据；接入真实 Tushare 数据需要 API Token。策略回测为实验性，未经过严格 point-in-time / 成本 / 幸存者偏差处理。
 
 ---
 
@@ -15,6 +15,9 @@ python -m agent --requirement "从沪深300筛选基本面稳健、估值合理�
 # 单只股票研究（自动识别股票代码）
 python -m agent --requirement "分析 600519.SH"
 
+# 重放历史运行（基于快照，确定性复现）
+python -m agent --replay runs/{run_id}
+
 # 交互模式
 python -m agent --interactive
 
@@ -23,28 +26,18 @@ export TUSHARE_TOKEN=your_token_here
 python -m agent --requirement "分析 600519.SH" --provider tushare
 ```
 
-每次运行会在 `runs/{run_id}/` 生成完整的审计记录：
-`request.json`、`plan.json`、`tool_trace.jsonl`、`data_snapshot.json`、`verification.json`、`report.md`、`meta.json`。
-
-### 示例输出
-
-运行 `python -m agent --requirement "分析 600519.SH"` 会生成：
+每次运行会在 `runs/{run_id}/` 生成完整的审计记录（9 个文件）：
 
 ```
-# 📊 投资研究报告
-## 一、用户需求
-stock_pool=single objective=mixed risk=medium top_k=5
-## 二、市场概况
-共从股票池中获取 1 只股票数据。
-## 三、候选股票评分及排名
-| 排名 | 股票代码 | 股票名称 | 行业 | 基本面 | 估值 | 风险 | 综合 |
-| 🥇 | 600519.SH | 贵州茅台 | 白酒 | 0.59 | 0.83 | 0.56 | **0.64** |
-📝 分析说明
-  基本面评分: 0.59/1.00
-  ROE: 40% → 贡献0.100 (ROE=6.2%)
-  ...
-## 四、组合建议
-## 免责声明
+request.json          原始需求
+plan.json             结构化计划（objective/weights/steps）
+tool_trace.jsonl      工具调用级 trace（输入/输出 hash、耗时、重试）
+agent_trace.jsonl     统一生命周期 trace（planner→tools→skills→verifier）
+data_snapshot.json    完整 point-in-time 数据快照（可重放）
+verification.json     校验结果（severity + policy mode）
+execution_graph.mmd   Mermaid 执行流程图
+report.md             最终 Markdown 报告
+meta.json             运行元信息（状态/耗时/事件数/错误）
 ```
 
 ---
@@ -59,33 +52,33 @@ stock_pool=single objective=mixed risk=medium top_k=5
                 ┌────────────┴────────────┐
                 │         Harness          │
                 │  Plan→Execute→Verify→Rpt │
-                │  (retry, timeout, hooks) │
+                │  (retry, timeout, gate)  │
                 └────────────┬────────────┘
                              │
         ┌────────────────────┼────────────────────┐
         ▼                    ▼                    ▼
 ┌──────────────┐   ┌────────────────┐   ┌────────────────┐
 │  Planner      │   │   Scheduler     │   │  Verifier       │
-│ (rules→plan) │   │ (DAG / parallel)│   │ (5-phase)       │
+│ (LLM+rules)  │   │ (DAG / parallel)│   │ (severity+mode) │
 └──────────────┘   └───────┬────────┘   └────────────────┘
                            │
                   ┌────────┴────────┐
-                  │   Skill Executor │
+                  │  Skill Executor  │
                   │  (fund/val/risk) │
+                  │  ← consumes      │
+                  └────────┬────────┘
+                           │ ResearchDataset (immutable)
+                  ┌────────┴────────┐
+                  │   DataCollector  │  ← ONLY provider accessor
                   └────────┬────────┘
                            │
                   ┌────────┴────────┐
                   │ MarketDataProvider │  ← abstract
                   │ (Mock | Tushare)   │
-                  └────────┬────────┘
-                           │
-                  ┌────────┴────────┐
-                  │  DataSnapshot    │  ← point-in-time wrapper
-                  │  (as_of/hash)    │
                   └─────────────────┘
 ```
 
-每次运行结束后，`RunRecorder` 将完整记录写入 `runs/{run_id}/`，保证可审计、可复现、可排查。
+**Provider 隔离**：Skills 永不直接访问 Provider。`DataCollector` 是唯一访问 Provider 的组件，把所有数据包装成不可变的 `ResearchDataset`（点时间快照），Skills 只消费快照。这保证了**相同快照 → 相同结果**（可重放），并防止未来函数。
 
 ---
 
@@ -95,28 +88,31 @@ stock_pool=single objective=mixed risk=medium top_k=5
 
 | 能力 | 说明 |
 |------|------|
-| **Planner** | 规则解析 + 模板化 Plan；支持中英文需求、股票代码识别（`分析 600519.SH`） |
+| **Planner** | LLM 结构化解析（受控）+ 规则回退；支持中英文、股票代码识别 |
 | **DAG Scheduler** | 自动拓扑排序 + 并行执行独立 Skill |
-| **MarketDataProvider** | 抽象协议；Mock（15 只股票）+ Tushare 真实实现 + Cached 包装 |
-| **基本面分析** | ROE、营收/利润增长率、现金流质量、负债率、毛利率（含 provenance） |
-| **估值分析** | PE/PB 相对分位评分 |
-| **风险分析** | 年化波动率、最大回撤（Sigmoid 评分） |
+| **Provider 隔离** | DataCollector 独占 Provider；Skills 只消费 ResearchDataset |
+| **DataSnapshot** | 完整点时间快照（stocks/prices/financials/valuation + as_of/publish/effective/trade_date） |
+| **Replay** | `python -m agent --replay runs/{run_id}` 基于快照确定性复现 |
+| **Mock Provider** | sha256 稳定数据 + 真实交易日历 + growth/value/cyclical/abnormal 四画像 |
+| **Tushare Provider** | 真实实现；已验证 daily/daily_basic；权限/限频优雅降级 |
+| **基本面分析** | ROE、营收/利润增长、现金流质量、负债率、毛利率（含 provenance） |
+| **估值分析** | PE/PB 相对分位评分（真实 PE/PB 优先） |
+| **风险分析** | 年化波动率、最大回撤 |
 | **组合评分** | 多策略加权综合评分 + 排名 |
-| **Verifier** | 数据新鲜度、未来函数、权重、缺失数据、证据链 5 阶段校验 |
+| **Verifier** | severity(info/warning/error/fatal) + policy_mode(permissive/standard/strict)；未来函数→fatal 阻断 |
 | **报告生成** | 结构化 Markdown（表格 + 详细分析 + 免责声明） |
-| **RunRecorder** | 每次运行 7 个审计文件（request/plan/tool_trace/snapshot/verification/report/meta） |
-| **DataSnapshot** | 统一数据快照（as_of/source/query_params/data_hash/version + 时间字段） |
+| **受控 LLM** | 仅 NL→InvestmentRequest + 报告润色；不生成 DAG/不选工具/不计算 |
+| **RunRecorder** | 每次运行 9 个审计文件（含 agent_trace + Mermaid 图） |
+| **评估框架** | Agent 执行质量（agent-quality + trajectory）+ 实验性策略评估 |
 | **工程规范** | pyproject.toml、ruff、mypy、pre-commit、GitHub Actions CI |
-| **评估框架** | 执行质量评估（agent-quality + trajectory）+ 实验性策略评估 |
 
 ### 🔲 部分实现
 
 | 能力 | 现状 | 差距 |
 |------|------|------|
-| Tushare 数据 | `OfficialTushareMCPProvider` 已实现 | 无真实 Token 环境验证；MCP 协议包装尚未做 |
+| 基本面（真实数据） | Mock 完整；Tushare 受账号权限限制 | 需更高 Tushare 积分访问 income/balance/cashflow |
 | 技术分析 | 目录/元数据存在 | 无 analyzer 实现 |
-| 回测 | `tools/backtest/engine.py` 骨架 | 未实现，且明确标注实验性 |
-| LLM 集成 | 未接入 | Planner/Verifier 当前为规则/算法驱动 |
+| 回测 | `BacktestEngine` 计算标准指标 | 实验性：无 PIT/成本/滑点/停牌/幸存者偏差 |
 
 ### 🔲 规划中
 
@@ -124,7 +120,7 @@ stock_pool=single objective=mixed risk=medium top_k=5
 |------|------|
 | 真实 MCP Server | 将 Tushare 工具暴露为标准 MCP 协议 |
 | 技术分析 Skill | 趋势/均线/动量/成交量 |
-| 回测引擎 | 需要严格 point-in-time、手续费、滑点、停牌、退市、幸存者偏差处理 |
+| 严格回测 | 需 point-in-time 数据 + 完整市场结构建模 |
 | Web UI / Dashboard | Streamlit/Gradio |
 | 向量记忆 | Embedding 语义检索 |
 
@@ -136,7 +132,7 @@ stock_pool=single objective=mixed risk=medium top_k=5
 # 安装开发依赖
 pip install -e ".[dev]"
 
-# 运行全部测试（当前 206 个）
+# 运行全部测试（当前 237 个）
 pytest tests/
 
 # 静态检查
@@ -156,6 +152,7 @@ pre-commit install
 
 ```bash
 TUSHARE_TOKEN=your_token_here        # 真实数据需要
+ANTHROPIC_API_KEY=your_key_here      # 受控 LLM（可选，缺省用规则）
 AGENT_PROVIDER=mock                  # mock | tushare
 AGENT_TOP_K=5
 ```
@@ -166,19 +163,21 @@ AGENT_TOP_K=5
 
 ```
 agent/                    # 业务逻辑（投资领域）
-├── planner.py           # 需求解析 → AnalysisPlan
-├── executor.py          # Scheduler 桥接 + Skill 编排 + DataSnapshot
-├── verifier.py          # 5 阶段验证
+├── planner.py           # LLM+规则 需求解析 → AnalysisPlan
+├── executor.py          # Scheduler 桥接 + Skill 编排
+├── data_collector.py    # 唯一 Provider 访问者 → ResearchDataset
+├── verifier.py          # severity + policy_mode 校验
 ├── report_generator.py  # Markdown 报告
+├── llm.py               # 受控 LLM（NL 解析 + 报告润色）
 ├── memory.py            # 7 层 Memory 外观
-└── __main__.py          # CLI 入口（含 RunRecorder）
+└── __main__.py          # CLI（run + replay）
 
 runtime/                 # 框架核心（领域无关）
-├── harness.py           # 生命周期管理（含 hook drain）
+├── harness.py           # 生命周期管理（含 hook drain + verify gate）
 ├── scheduler.py         # DAG 并行调度
 ├── graph.py             # TaskGraph 验证 + 拓扑排序
-├── snapshot.py          # DataSnapshot（point-in-time 数据包装）
-├── run_recorder.py      # runs/{run_id}/ 审计输出
+├── snapshot.py          # DataSnapshot + ResearchDataset（PIT）
+├── run_recorder.py      # runs/{run_id}/ 审计输出 + Mermaid 图
 ├── tracing/             # EventBus + AgentTrace + 格式化器
 └── ...
 
@@ -191,13 +190,13 @@ strategies/              # 分析策略 Skills（underscore 目录为可导入�
 tools/
 ├── providers.py          # MarketDataProvider 协议 + Mock + Tushare + Cached
 ├── registry.py           # 元数据驱动工具注册
-└── tushare-mcp/          # MCP 扩展位置（待实现）
+└── backtest/engine.py    # 实验性回测引擎
 
 evaluations/
-├── cases/                # 三个可复现端到端案例
+├── cases/                # 可复现端到端案例 + Tushare 真实验证记录
 ├── agent-quality/        # 执行质量评估
 ├── trajectory/           # 轨迹评估
-└── historical-backtest/  # 实验性策略回测（未实现）
+└── historical-backtest/  # 实验性策略回测
 
 runs/                     # 运行时产物（gitignored）
 ```
@@ -208,22 +207,33 @@ runs/                     # 运行时产物（gitignored）
 
 | 决策 | 选择 | 理由 |
 |------|------|------|
-| 数据抽象 | `MarketDataProvider` 协议 | 技能不绑定具体数据源，可测试、可切换 |
-| Planner | 规则解析 + 模板化 Plan | 可控、可复现，不给 LLM 任意生成执行图 |
-| 数据时间性 | `DataSnapshot`（as_of/hash） | 防止未来函数，支持回放审计 |
-| 重试边界 | Tool 层处理网络抖动，Scheduler 处理节点失败 | 避免多层重试放大调用 |
-| 异步 Hook | `ensure_future` + drain | 不阻塞主流程，错误写入 logger + 计数 |
-| 运行审计 | `RunRecorder` 每次运行 7 个文件 | 可审计、可复现、可排查 |
+| Provider 隔离 | DataCollector 独占 Provider，Skills 消费 ResearchDataset | 可重放、防未来函数、可测试 |
+| 数据时间性 | DataSnapshot（as_of/hash/时间字段） | 支持 point-in-time 分析 |
+| Planner | 受控 LLM + 规则回退 | LLM 只填结构化请求，DAG 模板确定性 |
+| Verifier | severity + policy_mode | 未来函数/权重错误按策略阻断流程 |
+| 重试边界 | Tool 层网络抖动，Scheduler 节点失败 | 避免多层重试放大 |
+| 运行审计 | 9 文件（含 agent_trace + Mermaid） | 可审计、可复现、可排查 |
+
+---
+
+## 真实 Tushare 验证（2026-07-31）
+
+- **daily / daily_basic**：真实数据可用（如 600519.SH 2025-01-15 收盘 1471.27）
+- **stock_basic**：免费档小时限频 → 优雅降级为代码 stub，分析继续
+- **income/balance/cashflow**：当前账号无权限 → trace 记录为错误，基本面降级
+- 真实端到端 run 捕获 485 条真实行情，风险指标基于真实数据
+
+详见 [evaluations/cases/tushare_live_validation.md](evaluations/cases/tushare_live_validation.md)。
 
 ---
 
 ## 已知限制
 
-1. **Mock 数据**：默认使用确定性哈希生成的模拟财务/价格数据，不反映真实市场
-2. **Tushare 未在真实环境验证**：`OfficialTushareMCPProvider` 已实现，但当前环境无有效 Token，未经真实数据验证
-3. **无 LLM**：Planner 为规则驱动，Skills 为算法驱动，未接入 LLM structured output
+1. **Mock 数据**：确定性生成，不反映真实市场
+2. **基本面真实数据受限**：当前 Tushare 账号无财务接口权限
+3. **LLM 受控**：仅 NL 解析 + 报告润色，未接入其他 LLM 能力
 4. **技术分析未实现**：仅基本面/估值/风险
-5. **回测为实验性**：未处理 point-in-time、手续费、滑点、停牌、退市、幸存者偏差，勿用于投资结论
+5. **回测实验性**：无 PIT/成本/滑点/停牌/退市/幸存者偏差，勿用于投资结论
 6. **单进程**：Scheduler 为单进程 asyncio 并发
 
 ---
@@ -231,17 +241,23 @@ runs/                     # 运行时产物（gitignored）
 ## 测试
 
 ```bash
-# 全部 206 个测试
+# 全部 237 个测试
 pytest tests/
 
 # 确定性指标计算
 pytest tests/strategies/test_fundamental_metrics.py
 
-# Planner 解析
-pytest tests/strategies/test_planner.py
+# Planner + LLM 解析
+pytest tests/strategies/test_planner.py tests/agent/test_llm.py
 
-# 端到端（Mock）
+# Verifier severity/policy
+pytest tests/agent/test_verifier.py
+
+# 端到端（Mock）+ 重放
 pytest tests/evaluations/test_mock_e2e.py
+
+# 回测指标（实验性）
+pytest tests/tools/test_backtest.py
 
 # 运行时（图/调度/工作流）
 pytest tests/runtime/
@@ -256,4 +272,5 @@ pytest tests/runtime/
 - [ADR-001~011](docs/adr/)
 - [评估框架](evaluations/README.md)
 - [可复现案例](evaluations/cases/README.md)
+- [Tushare 真实验证](evaluations/cases/tushare_live_validation.md)
 - [engineering-ai-standards](engineering-ai-standards/)
