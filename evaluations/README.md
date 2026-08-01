@@ -37,6 +37,23 @@ or survivorship bias. Any backtest output is illustrative only.
 `historical-backtest/` or `strategy-score/` outputs. They exist to
 demonstrate the evaluation framework, not to validate real strategies.
 
+### Backtest engine interface (reserved, experimental)
+
+`tools/backtest/engine.py` provides a `BacktestEngine` that computes the
+standard metrics (return / annualized / max drawdown / Sharpe / win rate)
+from signal + price series, plus a `cost_bps` parameter.
+
+The interface is **reserved for strict backtesting**, but the current
+implementation is **explicitly experimental**:
+- It models no transaction costs beyond a flat basis-point deduction
+- No slippage, trading halts, price-limit days, delistings, or
+  survivorship-bias handling
+- No point-in-time data enforcement
+
+Every `BacktestResult` carries `experimental: true` so consumers cannot
+mistake it for a production backtest. Complete these preconditions before
+treating any backtest output as investment-relevant.
+
 ## Reproducible end-to-end cases
 
 See [cases/README.md](cases/README.md) for three runnable scenarios that
