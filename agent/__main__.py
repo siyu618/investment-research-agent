@@ -281,42 +281,23 @@ def _build_result_manifest(result: Any, verification_dict: dict) -> dict:
 
 
 async def _build_agent_trace(executor: Any, requirement: str, harness: Any) -> list[dict]:
-    """Assemble the unified lifecycle trace for agent_trace.jsonl."""
-    from runtime.tracing.trace_span import trace_span
+    """Assemble the unified lifecycle trace for agent_trace.jsonl.
 
+    Uses ONLY spans recorded DURING the run by the Harness (planner/
+    verifier/report) and executor (tools/skills). No spans are fabricated
+    afterwards.
+    """
     entries: list[dict] = []
 
-    # Planner (from harness last_plan) — real duration via trace_span
-    plan_dict = _plan_to_dict(harness.last_plan)
-    async with trace_span(
-        executor.run_id, "planner", "planner", "Planner", sink=entries,
-    ) as span:
-        span.set_input(requirement)
-        span.set_output(plan_dict)
+    # Harness-recorded spans (planner / verifier / report) — real duration
+    entries.extend(harness.span_records())
 
-    # Skill + tool entries from executor
+    # Executor-recorded spans (data-collector tools + skills)
     entries.extend(executor.agent_trace_records())
 
-    # Verifier — status/output from the REAL VerificationResult
-    verification = harness.last_verification
-    if verification is not None:
-        v_dict = verification.to_dict()
-        async with trace_span(
-            executor.run_id, "verifier", "verifier", "Verifier", sink=entries,
-        ) as span:
-            span.set_input({"policy": verification.policy_mode,
-                            "results_count": getattr(verification, "check_count", 0)})
-            span.set_output(v_dict)
-            if not verification.passed:
-                span.status = "failed"
-                span.error = "; ".join(verification.errors[:2])
-    else:
-        async with trace_span(
-            executor.run_id, "verifier", "verifier", "Verifier", sink=entries,
-        ) as span:
-            span.status = "failed"
-            span.error = "pipeline failed before verification"
-            span.set_output({"note": "verification did not complete"})
+    # Tool-call spans from the collector (same event stream, kind=tool)
+    # already included in executor.agent_trace_records()
+
     return entries
 
 

@@ -61,6 +61,13 @@ class Harness:
         self.hook_error_count: int = 0
         self.last_plan: Any = None
         self.last_verification: Any = None
+        # Real trace spans collected during run (planner/verifier/reporter)
+        self._spans: list[dict] = []
+        self._span_sink: list[dict] = self._spans
+
+    def span_records(self) -> list[dict]:
+        """Real lifecycle spans recorded by the Harness."""
+        return list(self._spans)
 
     def add_hook(self, hook: LifecycleHook) -> None:
         """Register a lifecycle hook."""
@@ -88,14 +95,21 @@ class Harness:
 
         try:
             await self._fire_on_start(context)
+            from runtime.tracing.trace_span import trace_span
 
-            # Step 1: Plan
+            # Step 1: Plan (real span)
             self._emit(EventType.PLANNING_STARTED, {"requirement": requirement})
-            plan = await self._run_step(
-                "plan",
-                lambda: planner.create_plan(requirement, **kwargs),
-                context,
-            )
+            async with trace_span(
+                session_id, "planner", "planner", "Planner",
+                sink=self._span_sink,
+            ) as span:
+                span.set_input(requirement)
+                plan = await self._run_step(
+                    "plan",
+                    lambda: planner.create_plan(requirement, **kwargs),
+                    context,
+                )
+                span.set_output({"objective": getattr(plan, "objective", "")})
             self.last_plan = plan
             self._emit(EventType.PLANNING_COMPLETED, {"plan": str(type(plan))})
 
@@ -109,13 +123,22 @@ class Harness:
                 context,
             )
 
-            # Step 3: Verify
+            # Step 3: Verify (real span)
             self._emit(EventType.VERIFICATION_STARTED, {})
-            verification = await self._run_step(
-                "verify",
-                lambda: verifier.verify(plan, exec_result),
-                context,
-            )
+            async with trace_span(
+                session_id, "verifier", "verifier", "Verifier",
+                sink=self._span_sink,
+            ) as span:
+                span.set_input({"plan": getattr(plan, "objective", "")})
+                verification = await self._run_step(
+                    "verify",
+                    lambda: verifier.verify(plan, exec_result),
+                    context,
+                )
+                span.set_output(verification.to_dict() if hasattr(verification, "to_dict") else {})
+                if not verification.passed:
+                    span.status = "failed"
+                    span.error = "; ".join(getattr(verification, "errors", [])[:2])
             self.last_verification = verification
             self._emit(EventType.VERIFICATION_COMPLETED, {
                 "passed": verification.passed,
@@ -129,12 +152,18 @@ class Harness:
                     + "; ".join(getattr(verification, "errors", [])[:3])
                 )
 
-            # Step 4: Report
-            report = await self._run_step(
-                "report",
-                lambda: reporter.generate(plan, exec_result, verification),
-                context,
-            )
+            # Step 4: Report (real span)
+            async with trace_span(
+                session_id, "report", "report", "ReportGenerator",
+                sink=self._span_sink,
+            ) as span:
+                span.set_input({"plan": getattr(plan, "objective", "")})
+                report = await self._run_step(
+                    "report",
+                    lambda: reporter.generate(plan, exec_result, verification),
+                    context,
+                )
+                span.set_output({"report_id": getattr(report, "report_id", "")})
             self._emit(EventType.REPORT_GENERATED, {
                 "report_id": getattr(report, "report_id", "unknown"),
             })
