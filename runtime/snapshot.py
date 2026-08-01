@@ -37,6 +37,42 @@ def _serialize(rows: list[Any]) -> list[dict]:
 # ─── DataSnapshot ────────────────────────────────────────────────────────
 
 
+def _deep_freeze(obj: Any) -> Any:
+    """Recursively freeze a nested list/dict into immutable structures.
+
+    list → tuple, dict → MappingProxyType (read-only), recursively.
+    Scalars returned as-is. Used to make DataSnapshot truly immutable —
+    no callable path can mutate shared data.
+    """
+    import copy
+    from types import MappingProxyType
+
+    if isinstance(obj, dict):
+        return MappingProxyType({
+            k: _deep_freeze(v) for k, v in obj.items()
+        })
+    if isinstance(obj, (list, tuple)):
+        return tuple(_deep_freeze(v) for v in obj)
+    if hasattr(obj, "__dataclass_fields__"):
+        return _deep_freeze(copy.deepcopy(obj))
+    return obj
+
+
+def _deep_unfreeze(obj: Any) -> Any:
+    """Convert frozen structures back to plain list/dict (for serialization)."""
+    from types import MappingProxyType
+
+    if isinstance(obj, MappingProxyType):
+        return {k: _deep_unfreeze(v) for k, v in obj.items()}
+    if isinstance(obj, tuple):
+        return [_deep_unfreeze(v) for v in obj]
+    if isinstance(obj, dict):
+        return {k: _deep_unfreeze(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_deep_unfreeze(v) for v in obj]
+    return obj
+
+
 @dataclass
 class DataSnapshot:
     """Immutable point-in-time view of one data slice.
@@ -50,13 +86,17 @@ class DataSnapshot:
     Metadata (required for PIT analysis):
       as_of, source, query_params, version, publish_date,
       effective_date, trade_date.
+
+    Immutability: __post_init__ deep-freezes all data layers into
+    tuples + read-only MappingProxyType. Query accessors return deep
+    copies. Mutating an internal container raises TypeError.
     """
 
     as_of: str
     source: str
     query_params: dict = field(default_factory=dict)
 
-    # Data layers
+    # Data layers (deep-frozen in __post_init__)
     stocks: list[dict] = field(default_factory=list)
     prices: dict[str, list[dict]] = field(default_factory=dict)
     financials: dict[str, list[dict]] = field(default_factory=dict)
@@ -68,6 +108,14 @@ class DataSnapshot:
     publish_date: str = ""
     effective_date: str = ""
     trade_date: str = ""
+
+    def __post_init__(self) -> None:
+        """Deep-freeze all data layers so the snapshot is truly immutable."""
+        self.query_params = _deep_freeze(self.query_params)  # type: ignore[assignment]
+        self.stocks = _deep_freeze(self.stocks)  # type: ignore[assignment]
+        self.prices = _deep_freeze(self.prices)  # type: ignore[assignment]
+        self.financials = _deep_freeze(self.financials)  # type: ignore[assignment]
+        self.valuation = _deep_freeze(self.valuation)  # type: ignore[assignment]
 
     # ─── Hash ──────────────────────────────────────────────────────────
 
@@ -89,13 +137,13 @@ class DataSnapshot:
         """
         d: dict[str, Any] = {
             "source": self.source,
-            "query_params": self.query_params,
+            "query_params": _deep_unfreeze(self.query_params),
             "version": self.version,
             "trade_date": self.trade_date,
-            "stocks": self.stocks,
-            "prices": self.prices,
-            "financials": self.financials,
-            "valuation": self.valuation,
+            "stocks": _deep_unfreeze(self.stocks),
+            "prices": _deep_unfreeze(self.prices),
+            "financials": _deep_unfreeze(self.financials),
+            "valuation": _deep_unfreeze(self.valuation),
         }
         return d
 

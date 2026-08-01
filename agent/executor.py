@@ -107,12 +107,27 @@ class Executor:
             ctx = dict(input_data)
             ctx["stocks"] = self._stock_objects()
             ctx["dataset"] = self._dataset  # Skills consume snapshots only
+            # Snapshot immutability guard: hash BEFORE the skill runs
+            from runtime.snapshot import hash_of
             from skills.base.skill_sdk import SkillPlan
+
+            pre_hash = hash_of(self._dataset.to_dict()) if self._dataset else ""
 
             # Record a skill-level trace entry (for agent_trace.jsonl)
             t0 = _dt.now()
             try:
                 output = await skill.execute(ctx, SkillPlan())
+
+                # Verify the skill did NOT mutate shared data
+                post_hash = hash_of(self._dataset.to_dict()) if self._dataset else ""
+                if pre_hash and post_hash != pre_hash:
+                    from runtime.errors import FatalError
+
+                    raise FatalError(
+                        f"Skill '{node.skill}' mutated shared snapshot data "
+                        f"(hash changed: {pre_hash[:8]} → {post_hash[:8]})"
+                    )
+
                 self._agent_trace.append(TraceRecord.make(
                     run_id=self.run_id, step_id=node.id, kind="skill",
                     name=node.skill,

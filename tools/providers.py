@@ -357,10 +357,10 @@ class MockMarketDataProvider(MarketDataProvider):
         ]
 
     async def get_valuation(self, ts_code: str, trade_date: str = "") -> dict:
-        """Mock PE/PB from deterministic hash."""
-        h = hash(ts_code) & 0xFFFFFFFF
-        pe = round(8.0 + (h % 200) / 10, 2)
-        pb = round(0.5 + (h % 30) / 10, 2)
+        """Mock PE/PB from stable sha256 seed (cross-process deterministic)."""
+        h = _stable_seed(ts_code, "valuation")
+        pe = round(8.0 + (h % 2000) / 100, 2)
+        pb = round(0.5 + (h % 300) / 100, 2)
         return {"ts_code": ts_code, "pe": pe, "pb": pb,
                 "trade_date": trade_date or "20251231"}
 
