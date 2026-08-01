@@ -240,6 +240,7 @@ class Planner:
                          params={"start_date": req.data_start_date,
                                  "end_date": req.data_end_date,
                                  "stock_codes": req.stock_codes,
+                                 "as_of": req.data_end_date,
                                  "timeout": 60}),
             AnalysisStep(id=2, skill="fundamental-analysis",
                          target=req.stock_pool,

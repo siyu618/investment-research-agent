@@ -66,6 +66,7 @@ class Executor:
         self._stocks: list = []
         self._dataset: ResearchDataset | None = None
         self._requested_codes: list[str] = []
+        self._as_of: str | None = None
         self._agent_trace: list[dict] = []  # skill-level lifecycle entries
 
     # ─── Execution ─────────────────────────────────────────────────────
@@ -75,6 +76,7 @@ class Executor:
         for step in plan.analysis_steps:
             if step.skill == "data-collector":
                 self._requested_codes = list(step.params.get("stock_codes") or [])
+                self._as_of = step.params.get("as_of") or None
                 break
         graph = self._plan_to_graph(plan)
         return await self._execute_graph(graph)
@@ -192,7 +194,7 @@ class Executor:
         requested = list(input_data.get("stock_codes") or []) or self._requested_codes
         start_date = str(input_data.get("start_date", "20240101"))
         end_date = str(input_data.get("end_date", "20251231"))
-        as_of = input_data.get("as_of") or None
+        as_of = input_data.get("as_of") or self._as_of or None
 
         dataset = await self.collector.collect(
             stock_codes=requested or None,

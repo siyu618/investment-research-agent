@@ -17,6 +17,19 @@ from runtime.tracing.trace_span import trace_span
 from tools.providers import MarketDataProvider, StockBasic
 
 
+def _as_of_iso(as_of: str | None) -> str:
+    """Normalize an as_of value to ISO date (YYYY-MM-DD) for comparison.
+
+    Accepts ISO ('2024-06-30') or compact ('20240630'); empty → ''.
+    """
+    if not as_of:
+        return ""
+    a = as_of.replace("-", "").replace("/", "")
+    if len(a) == 8:
+        return f"{a[:4]}-{a[4:6]}-{a[6:8]}"
+    return as_of
+
+
 class DataCollector:
     """Exclusive provider accessor producing an immutable ResearchDataset."""
 
@@ -121,9 +134,10 @@ class DataCollector:
                 try:
                     rows = await self._provider.get_daily_price(
                         s.ts_code, start_date, end_date)
+                    as_of_iso = _as_of_iso(as_of)
                     filtered = [
                         r for r in rows
-                        if not as_of or r.trade_date <= as_of.replace("-", "")
+                        if not as_of_iso or r.available_at <= as_of_iso
                     ]
                     span.set_output({"rows": len(rows), "kept": len(filtered)})
                     return s.ts_code, [r.__dict__ for r in filtered]
@@ -155,11 +169,11 @@ class DataCollector:
                 try:
                     rows = await self._provider.get_financial_summary(
                         s.ts_code, start_date, end_date)
-                    # PIT: keep only records disclosed by as_of
+                    # PIT: keep only records disclosed by as_of (available_at)
+                    as_of_iso = _as_of_iso(as_of)
                     filtered = []
                     for r in rows:
-                        ann = getattr(r, "ann_date", "") or ""
-                        if as_of and ann and ann > as_of.replace("-", ""):
+                        if as_of_iso and r.available_at > as_of_iso:
                             continue
                         filtered.append(r)
                     span.set_output({"periods": len(rows), "kept": len(filtered)})

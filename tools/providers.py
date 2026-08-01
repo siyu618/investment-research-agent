@@ -40,6 +40,14 @@ class DailyPrice:
     amount: float = 0.0
     change_pct: float = 0.0
 
+    @property
+    def available_at(self) -> str:
+        """ISO date this price became available (PIT anchor = trade date)."""
+        d = self.trade_date
+        if len(d) == 8:
+            return f"{d[:4]}-{d[4:6]}-{d[6:8]}"
+        return d
+
 
 @dataclass
 class FinancialStatement:
@@ -51,6 +59,18 @@ class FinancialStatement:
     end_date: str                    # e.g. "20241231" (report period end)
     ann_date: str = ""               # announcement/disclosure date YYYYMMDD (PIT)
     report_type: str = "annual"      # annual | q1 | q2 | q3
+
+    @property
+    def available_at(self) -> str:
+        """ISO date this record became available (PIT anchor).
+
+        Derives from ann_date (YYYYMMDD → YYYY-MM-DD); falls back to
+        end_date when no announcement date is present.
+        """
+        src = self.ann_date or self.end_date
+        if len(src) == 8:
+            return f"{src[:4]}-{src[4:6]}-{src[6:8]}"
+        return src
 
     # Income statement
     revenue: float | None = None          # 营业总收入
