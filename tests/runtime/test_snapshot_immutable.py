@@ -47,10 +47,22 @@ class TestSnapshotImmutability:
         with pytest.raises(TypeError):
             s.valuation["600519.SH"]["pe"] = 999.0  # type: ignore[index]
 
-    def test_hash_stable_across_snapshots(self):
+    def test_content_hash_stable_across_snapshots(self):
         a = _make_snapshot()
         b = _make_snapshot()
-        assert a.data_hash == b.data_hash
+        # content_hash excludes run-varying timestamps → stable
+        assert a.content_hash == b.content_hash
+
+    def test_snapshot_hash_differs_with_as_of(self):
+        """snapshot_hash includes as_of → different across runs."""
+        from runtime.snapshot import DataSnapshot
+
+        a = DataSnapshot.build(source="mock", as_of="2024-01-01",
+                               stocks=[{"ts_code": "x"}])
+        b = DataSnapshot.build(source="mock", as_of="2025-01-01",
+                               stocks=[{"ts_code": "x"}])
+        assert a.content_hash == b.content_hash  # same data
+        assert a.snapshot_hash != b.snapshot_hash  # different as_of
 
     def test_research_dataset_stocks_read_only(self):
         ds = ResearchDataset([_make_snapshot()])

@@ -35,7 +35,7 @@ def _gen_code() -> str:
             d = snap.to_dict()
             last_close = d['prices']['600519.SH'][-1]['close']
             print(json.dumps({
-                'data_hash': snap.data_hash,
+                'content_hash': snap.content_hash,
                 'stock_count': len(d['stocks']),
                 'price_count': len(d['prices']['600519.SH']),
                 'fin_count': len(d['financials']['600519.SH']),
@@ -64,8 +64,8 @@ class TestCrossProcessDeterminism:
         code = _gen_code()
         a = _run_subprocess(code)
         b = _run_subprocess(code)
-        assert a["data_hash"] == b["data_hash"], (
-            "Mock snapshot hash differs across processes"
+        assert a["content_hash"] == b["content_hash"], (
+            "Mock snapshot content hash differs across processes"
         )
 
     def test_two_processes_identical_prices(self):
