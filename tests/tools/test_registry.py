@@ -263,3 +263,48 @@ class TestToolErrors:
             recoverable=False,
         )
         assert err.recoverable is False
+
+
+class TestProviderRegistration:
+    """ToolRegistry can bridge a MarketDataProvider into uniform tools."""
+
+    def test_register_from_provider(self):
+        from tools.providers import MockMarketDataProvider
+
+        reg = ToolRegistry()
+        count = reg.register_from_provider(MockMarketDataProvider())
+        assert count > 0
+        assert reg.get_tool("get_stock_basic") is not None
+        assert reg.get_tool("get_valuation") is not None
+
+    def test_capabilities_grouping(self):
+        from tools.providers import MockMarketDataProvider
+
+        reg = ToolRegistry()
+        reg.register_from_provider(MockMarketDataProvider())
+        caps = reg.capabilities()
+        assert "market-data" in caps
+        assert "financials" in caps
+        assert "get_stock_basic" in caps["market-data"]
+
+    @pytest.mark.asyncio
+    async def test_provider_tool_invocation(self):
+        from tools.providers import MockMarketDataProvider
+
+        reg = ToolRegistry()
+        reg.register_from_provider(MockMarketDataProvider())
+        result = await reg.invoke(
+            "get_stock_basic", {"ts_codes": ["600519.SH"]})
+        assert result.success is True
+        assert len(result.data) == 1
+
+    def test_find_by_capability_for_planner(self):
+        """Planner can discover financials tools for fundamental analysis."""
+        from tools.providers import MockMarketDataProvider
+
+        reg = ToolRegistry()
+        reg.register_from_provider(MockMarketDataProvider())
+        financial_tools = reg.find_by_capability("financials")
+        names = {t.name for t in financial_tools}
+        assert "get_financial_summary" in names
+        assert "get_income_statement" in names

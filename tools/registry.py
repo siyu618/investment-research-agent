@@ -275,6 +275,56 @@ class ToolRegistry:
 
         return count
 
+    def register_from_provider(self, provider: Any) -> int:
+        """Register MarketDataProvider methods as tools.
+
+        Bridges the provider (the concrete data source) into the ToolRegistry
+        so the Planner can discover and the runtime can invoke data tools
+        uniformly. Each provider method becomes a registered tool with
+        capability metadata.
+
+        Returns the number of tools registered.
+        """
+
+        # Method → (tool name, capability)
+        mappings = {
+            "get_stock_basic": ("get_stock_basic", "market-data"),
+            "get_daily_price": ("get_daily_price", "market-data"),
+            "get_trade_calendar": ("get_trade_calendar", "market-data"),
+            "get_income_statement": ("get_income_statement", "financials"),
+            "get_balance_sheet": ("get_balance_sheet", "financials"),
+            "get_cashflow": ("get_cashflow", "financials"),
+            "get_money_flow": ("get_money_flow", "market-behavior"),
+            "get_holder_change": ("get_holder_change", "market-behavior"),
+            "get_valuation": ("get_valuation", "financials"),
+            "get_financial_summary": ("get_financial_summary", "financials"),
+        }
+
+        count = 0
+        for method_name, (tool_name, capability) in mappings.items():
+            if not hasattr(provider, method_name):
+                continue
+            method = getattr(provider, method_name)
+
+            # Provider methods are async (MarketDataProvider ABC). Wrap so
+            # ToolRegistry.invoke can call them uniformly. Use default-arg
+            # capture to bind the method early (avoid closure late-binding).
+            async def wrapper(*args, _method=method, **kwargs):
+                return await _method(*args, **kwargs)
+
+            wrapper.__name__ = tool_name
+            meta = ToolMetadata(
+                name=tool_name,
+                description=f"Provider tool: {method_name} (capability {capability})",
+                capability=capability,
+                version="1.0.0",
+                permission="read",
+            )
+            self.register(wrapper, meta)
+            count += 1
+
+        return count
+
     # ─── Discovery ───────────────────────────────────────────────────────
 
     def list_tools(self) -> list[ToolMetadata]:
@@ -302,6 +352,13 @@ class ToolRegistry:
             meta for name, meta in self._metadata.items()
             if name in names
         ]
+
+    def capabilities(self) -> dict[str, list[str]]:
+        """Group tool names by capability — for Planner discovery."""
+        groups: dict[str, list[str]] = {}
+        for meta in self._metadata.values():
+            groups.setdefault(meta.capability, []).append(meta.name)
+        return groups
 
     def get_schemas_for_llm(self) -> list[dict]:
         """Return tool schemas formatted for LLM tool-use API.
