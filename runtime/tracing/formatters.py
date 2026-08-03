@@ -112,6 +112,79 @@ def format_scorecard_cli(score) -> str:
     return "\n".join(lines)
 
 
+def format_trace_chain_cli(
+    spans: list[dict],
+    query: str = "",
+    duration_ms: int = 0,
+) -> str:
+    """Render the full agent chain from real spans.
+
+    The chain reflects the actual lifecycle stages recorded during the run:
+
+        User Query → Planner → Agent(Skill) → Tool → Retrieval → LLM → Final Result
+
+    Span kinds are mapped to chain stages; each line shows the stage label,
+    span name, status, latency, and (for LLM) token usage. This is the
+    production-style "agent debugging" view.
+    """
+    lines = []
+    lines.append("─" * 60)
+    lines.append(" 🔍 Agent Chain (User Query → … → Final Result)")
+    lines.append("─" * 60)
+    lines.append(f"  QUERY    {query[:80] if query else '(no query)'}")
+    lines.append("")
+
+    if not spans:
+        lines.append("  (no spans recorded)")
+    else:
+        for span in spans:
+            kind = span.get("kind", "?")
+            name = span.get("name", "?")
+            status = span.get("status", "ok")
+            dur = span.get("duration_ms", 0)
+            stage = _span_stage(kind)
+            mark = "✓" if status == "ok" else "✗" if status == "error" else "•"
+            seg = f"  {mark} [{stage:<5}] {name}"
+            extras = []
+            if dur:
+                extras.append(f"{dur}ms")
+            if kind == "llm":
+                usage = span.get("token_usage") or {}
+                in_tok = usage.get("input_tokens", 0)
+                out_tok = usage.get("output_tokens", 0)
+                if in_tok or out_tok:
+                    extras.append(f"{in_tok}+{out_tok} tok")
+            if span.get("output_summary"):
+                extras.append(span["output_summary"][:40])
+            if extras:
+                seg += "  (" + ", ".join(extras) + ")"
+            lines.append(seg)
+        lines.append("")
+        lines.append(f"  {len(spans)} spans total")
+
+    if duration_ms:
+        lines.append(f"  duration: {duration_ms}ms")
+    lines.append("─" * 60)
+    return "\n".join(lines)
+
+
+def _span_stage(kind: str) -> str:
+    """Map a span kind to its chain-stage label."""
+    mapping = {
+        "planner": "PLAN",
+        "scheduler": "SCHED",
+        "agent": "AGENT",
+        "skill": "SKILL",
+        "tool": "TOOL",
+        "retrieval": "RETR",
+        "llm": "LLM",
+        "verifier": "VERIFY",
+        "aggregator": "AGG",
+        "reporter": "REPORT",
+    }
+    return mapping.get(kind, kind.upper()[:5])
+
+
 # ─── JSON Trace Export ──────────────────────────────────────────────────
 
 

@@ -1,6 +1,6 @@
 # Architecture Decision Record: Event-Driven Observability
 
-**Status:** Proposed
+**Status:** Accepted
 **Decision:** #008
 **Date:** 2026-07-29
 

@@ -48,36 +48,48 @@ A **production-grade Agent Framework + Reference Implementation** that demonstra
 
 ## 1. Phase Overview
 
+> **Status (2026-08):** Phases 1–5 are **complete** and shipped (plus unplanned work: ADR-011~015, Point-in-Time, Deterministic Replay). Phase 6 (Platform Refinement) is the current focus.
+
 ```
-Phase 1: Runtime Core + Event System     ← NOW
+Phase 1: Runtime Core + Event System     ✅ COMPLETE
   ├── runtime/ (Harness, Lifecycle, Tracing)
   ├── Core Event Types
   └── ADR-006: Runtime Architecture
 
-Phase 2: Task Graph + Scheduler
+Phase 2: Task Graph + Scheduler         ✅ COMPLETE
   ├── runtime/graph.py (DAG definitions)
   ├── runtime/scheduler.py (parallel executor)
   ├── Investment workflows as executable TaskGraphs
   └── ADR-007: DAG-based Workflow Engine
 
-Phase 3: Skill SDK + Tool Registry
+Phase 3: Skill SDK + Tool Registry      ✅ COMPLETE
   ├── skills/base/skill_sdk.py (standardized lifecycle)
   ├── tools/registry.py (metadata-rich ToolRegistry)
   ├── Migrate existing skills
   └── ADR-008: Skill SDK Standardization
 
-Phase 4: Memory Expansion + Observability
+Phase 4: Memory Expansion + Observability ✅ COMPLETE
   ├── Memory layers (Research, Execution, ToolCache, Artifact)
   ├── Full event instrumentation
   ├── CLI trace output
   └── ADR-009: Memory Expansion
 
-Phase 5: Trajectory Evaluation + Integration
+Phase 5: Trajectory Evaluation + Integration ✅ COMPLETE
   ├── evaluations/trajectory/ (execution path scoring)
   ├── Full end-to-end flow
   ├── Example user scenarios as integration tests
   ├── Update docs/design.md
   └── ADR-010: Trajectory Evaluation
+
+Phase 6: Platform Refinement (Agent Platform) ← NOW
+  ├── Unified AgentRuntime (ADR-015): one lifecycle engine
+  ├── ToolRegistry source_type (local/mcp/api) + auto schema inference
+  ├── RAG knowledge layer (KnowledgeRetriever on ResearchMemory)
+  ├── LLM telemetry (kind="llm" spans + real token usage)
+  ├── Execution metrics (AgentRunStats → meta.json/result_manifest)
+  ├── Full-chain observability (format_trace_chain_cli)
+  ├── CLI: --reuse-memory, --eval-trajectory
+  └── README/docs re-positioned as Agent Platform
 ```
 
 ---
@@ -1088,14 +1100,15 @@ tushare-investment-agent/
 │       ├── event_types.py            # All event type definitions
 │       └── formatters.py             # CLI, JSON, OpenTelemetry output
 │
-├── agent/                            # ── Business Logic (Investment Domain)
-│   ├── planner.py                    # Requirement → TaskGraph (uses ToolRegistry)
+├── agent/                            # ── Smart Decision (Investment Domain)
+│   ├── planner.py                    # Dynamic Planner (plan_for_goal, uses ToolRegistry)
+│   ├── runtime_adapter.py            # [2026-08] Bridges AgentRuntime ↔ domain components
 │   ├── executor.py                   # Thin wrapper → delegates to Scheduler
 │   ├── verifier.py                   # Multi-phase verification skill
-│   ├── report_generator.py           # Template-based report skill
+│   ├── report_generator.py           # Plan-aware report skill
 │   ├── memory.py                     # Memory facade → delegates to memory/ tiers
 │   ├── registry.py                   # SkillRegistry + ToolRegistry facade
-│   └── __main__.py                   # CLI entry (Harness-based)
+│   └── __main__.py                   # CLI entry (AgentRuntime-based)
 │
 ├── skills/                           # ── Skills (domain-specific or generic)
 │   ├── base/
@@ -1131,6 +1144,7 @@ tushare-investment-agent/
 │   ├── episodic.py                  # SQLite session history
 │   ├── semantic.py                  # Markdown knowledge
 │   ├── research.py                  # Long-term research results (+SQLite)
+│   ├── retrieval.py                 # [2026-08] RAG knowledge layer (company/industry/theme)
 │   ├── tool_cache.py                # Tool call deduplication (+SQLite)
 │   ├── execution.py                 # Execution checkpoints (+JSON)
 │   └── artifacts.py                 # Generated reports (+filesystem)

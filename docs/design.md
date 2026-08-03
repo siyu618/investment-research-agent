@@ -1,9 +1,51 @@
-# Design Document: Tushare Investment Research AI Agent
+# Design Document: Agentic Investment Research Platform
 
-**Status:** Draft
+**Status:** Draft (evolving — see README for the current platform state)
 **Author(s):** Principal AI Engineer
 **Date:** 2026-07-28
 **PR/FD:** TBD
+
+> **Platform positioning (2026-08 update):** This project is an **Agent Platform** whose reference domain is investment research. The platform core is domain-agnostic — the unified `AgentRuntime`, ToolRegistry, RAG knowledge layer, memory tiers, trajectory evaluation, and observability are all reusable for other domains. The investment modules (`agent/`, `strategies/`) are a concrete implementation on top. See [ADR-015](adr/015-agent-runtime-unification.md).
+
+## 0. Current Architecture (2026-08)
+
+### Unified Agent Runtime
+
+```
+User Query → AgentRuntime.create_task → plan → schedule → execute → aggregate → report
+```
+
+The single lifecycle engine is `runtime/agent_runtime.py`, domain-agnostic. The investment components are injected through `agent/runtime_adapter.py`:
+
+- **planner** — `Planner.plan_for_goal` (dynamic intent decomposition + tool mapping; LLM first, rules fallback)
+- **scheduler** — `InvestmentExecutorAdapter` (AnalysisPlan → TaskGraph → Scheduler)
+- **aggregator** — `InvestmentVerifierStage` (runs the domain Verifier, policy-gated)
+- **reporter** — `InvestmentReporterStage` (ReportGenerator.generate)
+
+### Four-Layer Separation
+
+| Layer | Directory | Responsibility |
+|-------|-----------|----------------|
+| Smart Decision | `agent/` | Planner (dynamic), Executor (DAG bridge), Verifier, Report Gen |
+| Task Orchestration | `runtime/` + `workflows/` | Scheduler, graph engine, workflow definitions |
+| Capability Encapsulation | `skills/` + `strategies/` | Skill SDK (5-phase lifecycle), analysis strategies |
+| External Capability | `tools/` | ToolRegistry (local/mcp/api), Providers, Backtest |
+
+### Platform Capabilities (implemented)
+
+- **Tool Registry** — metadata-driven (name/description/JSON Schema/capability/source_type local|mcp|api/cost/rate_limit/cache_policy); auto schema inference from signatures; Planner discovery via `find_by_capability`.
+- **RAG Knowledge Layer** — `memory/retrieval.py` recalls prior research by company/industry/theme; `memory/research.py` persists with subject tags; every retrieval emits a `kind="retrieval"` span.
+- **Memory** — 7 tiers behind the `MemoryProvider` ABC (`memory/interfaces.py`).
+- **Evaluation** — `AgentRunStats` (task/tool success rate, latency, token cost, evidence count) aggregated from real spans into `meta.json` + `result_manifest.execution_stats`; `--eval-trajectory` scores a run's trajectory.
+- **Observability** — `runtime/tracing/formatters.py:format_trace_chain_cli` renders the full chain; `agent_trace.jsonl` + `execution_graph.mmd` per run.
+- **LLM Telemetry** — `agent/llm.py` records `kind="llm"` spans with real token usage from the API `usage` field.
+
+### Original Design vs. Current Implementation
+
+The original sections below (MCP-centric vision) are the design intent; the current implementation (2026-08) makes two adjustments:
+
+1. **Direct provider protocol, not MCP** — data access uses `tools/providers.py:MarketDataProvider` (Mock/Tushare) rather than a live MCP server. The ToolRegistry models `source_type` so an MCP-backed tool can drop in.
+2. **Dynamic planning, not fixed workflow** — the Planner's `plan_for_goal` decomposes the goal into a variable step set; the 7-step template is the fallback.
 
 ## 1. Background
 

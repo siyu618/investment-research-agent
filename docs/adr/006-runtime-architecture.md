@@ -1,6 +1,6 @@
 # Architecture Decision Record: Runtime/Harness Architecture
 
-**Status:** Proposed
+**Status:** Accepted
 **Decision:** #006
 **Date:** 2026-07-29
 

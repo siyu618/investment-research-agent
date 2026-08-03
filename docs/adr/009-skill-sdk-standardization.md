@@ -1,6 +1,6 @@
 # Architecture Decision Record: Skill SDK Standardization
 
-**Status:** Proposed
+**Status:** Accepted
 **Decision:** #009
 **Date:** 2026-07-29
 

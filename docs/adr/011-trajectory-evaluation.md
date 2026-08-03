@@ -1,6 +1,6 @@
 # Architecture Decision Record: Trajectory Evaluation
 
-**Status:** Proposed
+**Status:** Accepted
 **Decision:** #011
 **Date:** 2026-07-29
 

@@ -1,33 +1,38 @@
-# Tushare Investment Research Agent — CLAUDE.md
+# Agentic Investment Research Platform — CLAUDE.md
 
 ## Identity
 
-You are a Principal AI Engineer building the Tushare Investment Research Agent — a production-grade AI agent system that demonstrates skill-based architecture, MCP tool integration, multi-strategy analysis, and automated evaluation.
+You are a Principal AI Engineer building the **Agentic Investment Research Platform** — a production-grade **Agent Platform** whose reference domain is investment research. It demonstrates the full agent-infrastructure stack: dynamic planning, a unified agent runtime, tool orchestration (MCP ecosystem), a RAG knowledge layer, persistent memory, trajectory evaluation, and observability.
 
-This project is the **reference implementation** of the [engineering-ai-standards](engineering-ai-standards/) framework applied to the investment research domain.
+This project is the **reference implementation** of the [engineering-ai-standards](engineering-ai-standards/) framework applied to the investment research domain. The platform core is domain-agnostic; the investment domain is a concrete implementation on top of it.
 
 ## Project Architecture
 
 ```
-docs/design.md          → Full system design document
-docs/adr/               → Architecture Decision Records
-agent/                  → Agent core (Planner, Executor, Memory, Verifier, Report Gen)
+docs/design.md          → Full system design document (platform positioning)
+docs/adr/               → Architecture Decision Records (001-015)
+agent/                  → Smart Decision layer (dynamic Planner, Executor, Runtime Adapter, Verifier, Report Gen)
+runtime/                → Framework Core (AgentRuntime, Scheduler, Graph, Snapshot, Tracing, RunRecorder)
 strategies/             → Investment analysis skills (fund, tech, val, risk, portfolio)
-tools/                  → MCP servers (tushare-mcp, backtest, market-data)
+skills/                 → Skill SDK (5-phase lifecycle)
+tools/                  → External capability layer (ToolRegistry, Providers, Backtest, registry.d)
 workflows/              → Workflow definitions (investment-research, portfolio-review)
 registry/               → Skill registry
-evaluations/            → Strategy performance + agent quality evaluation cases
-memory/                 → Long-term semantic memory
+memory/                 → 7-tier memory (Research + retrieval.py RAG knowledge layer)
+evaluations/            → Strategy performance + agent quality + trajectory evaluation
+demo/                   → Platform capability demo script
 reports/                → Generated investment reports
 ```
 
 ## Key Design Decisions
 
-1. **Hybrid Orchestrated + ReAct pattern** — Planner → Executor → Verifier orchestration, with ReAct loops within each skill execution.
-2. **Skills follow engineering-ai-standards format** — Each strategy has SKILL.md, metadata.yaml, analyzer.py, eval/, examples/, CHANGELOG.md.
-3. **Three-tier memory** — Working (in-memory dict), Episodic (SQLite), Semantic (markdown files).
-4. **MCP for data access** — Tushare API exposed as MCP tools (discoverable, validated, observable).
-5. **Dual-track evaluation** — Strategy performance (returns, Sharpe, drawdown) + Agent quality (correctness, completeness, reasoning).
+1. **Unified AgentRuntime (ADR-015)** — one lifecycle engine `create_task → plan → schedule → execute → aggregate → report`, domain-agnostic, with business components injected via `agent/runtime_adapter.py`.
+2. **Dynamic Planning** — `Planner.plan_for_goal` decomposes a goal into a variable task set by intent keywords + tool capabilities (LLM first, rule fallback); no fixed workflow template.
+3. **Metadata-driven Tool Registry** — tools declare JSON Schema/capability/source_type (local|mcp|api)/cost/rate_limit/cache_policy; the Planner discovers by capability.
+4. **RAG Knowledge Layer** — `memory/retrieval.py` recalls prior research by company/industry/theme and persists results back for cross-session knowledge accumulation.
+5. **Skills follow engineering-ai-standards format** — Each strategy has SKILL.md, metadata.yaml, analyzer.py, eval/, examples/, CHANGELOG.md.
+6. **Provider isolation** — DataCollector is the only provider accessor; skills consume immutable `ResearchDataset` (replayable, PIT).
+7. **Evaluation + Observability** — AgentRunStats (task/tool success, latency, token cost, evidence) from real spans; full chain `User Query → Planner → Agent → Tool → Retrieval → LLM → Result` observable in agent_trace.jsonl + Mermaid + CLI.
 
 ## Workflow
 
@@ -42,18 +47,21 @@ For any task in this project:
 
 | Path | Purpose |
 |------|---------|
-| `docs/design.md` | Full system architecture design |
-| `docs/adr/001-agent-architecture.md` | Agent pattern decision |
-| `docs/adr/002-skill-system.md` | Skill system decision |
-| `docs/adr/003-memory-architecture.md` | Memory architecture decision |
-| `docs/adr/004-mcp-integration.md` | MCP integration strategy |
-| `docs/adr/005-evaluation-framework.md` | Evaluation framework decision |
+| `docs/design.md` | Full system architecture design (platform) |
+| `docs/adr/015-agent-runtime-unification.md` | Unified AgentRuntime decision |
+| `runtime/agent_runtime.py` | Unified lifecycle engine + AgentRunStats |
+| `agent/runtime_adapter.py` | Bridges AgentRuntime ↔ investment components |
+| `agent/planner.py` | Dynamic Planner (plan_for_goal, intent decomposition) |
+| `agent/executor.py` | AnalysisPlan → TaskGraph → Scheduler |
+| `agent/llm.py` | LLM backend (token/latency spans) |
+| `tools/registry.py` | Metadata-driven ToolRegistry (local/mcp/api) |
+| `memory/retrieval.py` | RAG knowledge layer (company/industry/theme) |
+| `memory/research.py` | Long-term research storage (SQLite) |
+| `runtime/tracing/formatters.py` | CLI full-chain trace formatter |
+| `agent/report_generator.py` | Plan-aware investment report generation |
+| `agent/verifier.py` | Multi-phase verification (policy gate) |
 | `strategies/base/models.py` | Shared interfaces and data models |
-| `agent/planner.py` | Requirement decomposition |
-| `agent/executor.py` | Plan execution and skill orchestration |
-| `agent/memory.py` | Three-tier memory manager |
-| `agent/verifier.py` | Multi-phase verification |
-| `agent/report_generator.py` | Investment report generation |
+| `evaluations/trajectory/evaluator.py` | Trajectory evaluation scoring |
 | `registry/skills.yaml` | Central skill registry |
 
 ## Standards

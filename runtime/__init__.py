@@ -6,6 +6,7 @@
 # This package is the "Framework Core" — it owns cross-cutting concerns
 # and knows nothing about the investment domain.
 
+from .agent_runtime import AgentRunStats, AgentRuntime, AgentTask
 from .cache import CachePolicy, CacheProvider, TTLCache
 from .errors import AgentError, FatalError, RecoverableError, SkillError, TimeoutError, ToolError
 from .graph import (
@@ -43,6 +44,8 @@ from .workflow import (
 )
 
 __all__ = [
+    # Unified AgentRuntime
+    "AgentRuntime", "AgentTask", "AgentRunStats",
     # Core models
     "Event", "EventType", "ExecutionContext", "RuntimeConfig",
     "AgentResult", "GraphResult", "NodeResult",

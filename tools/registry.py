@@ -49,6 +49,58 @@ class CachePolicy:
     enabled: bool = True
 
 
+# ─── Schema Inference ────────────────────────────────────────────────────
+
+
+# Python type → JSON Schema type mapping
+_PY_TO_JSON = {
+    "str": "string",
+    "int": "integer",
+    "float": "number",
+    "bool": "boolean",
+    "list": "array",
+    "dict": "object",
+}
+
+
+def infer_schema_from_signature(fn: Callable) -> dict:
+    """Build an input JSON Schema from a callable's signature.
+
+    Uses parameter annotations (best-effort); unannotated parameters fall
+    back to "string". Defaults are copied into the schema as documentation.
+    This keeps every registered tool with a Planner-consumable contract even
+    when the author did not hand-write a schema.
+    """
+    props: dict[str, dict] = {}
+    required: list[str] = []
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return {"type": "object", "properties": {}}
+
+    for name, param in sig.parameters.items():
+        if name in ("self", "cls"):
+            continue
+        if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
+            continue
+        ann = param.annotation
+        js_type = "string"
+        if ann is not inspect.Parameter.empty:
+            origin = getattr(ann, "__origin__", None)
+            if origin is not None:  # e.g. list[str] / Optional[str]
+                js_type = _PY_TO_JSON.get(getattr(origin, "__name__", ""), "string")
+            elif hasattr(ann, "__name__"):
+                js_type = _PY_TO_JSON.get(ann.__name__, "string")
+        prop: dict = {"type": js_type}
+        if param.default is not inspect.Parameter.empty:
+            prop["default"] = param.default
+        props[name] = prop
+        if param.default is inspect.Parameter.empty:
+            required.append(name)
+
+    return {"type": "object", "properties": props, "required": required}
+
+
 # ─── Tool Metadata ───────────────────────────────────────────────────────
 
 
@@ -67,6 +119,18 @@ class ToolPermission(str, Enum):
     READ = "read"
     WRITE = "write"
     ADMIN = "admin"
+
+
+class ToolSource(str, Enum):
+    """Where a tool's implementation comes from.
+
+    - LOCAL: in-process Python function (deterministic, zero-latency)
+    - MCP: Model Context Protocol server (external, discovered capability)
+    - API: remote HTTP/RPC endpoint (rate-limited, network-bound)
+    """
+    LOCAL = "local"
+    MCP = "mcp"
+    API = "api"
 
 
 @dataclass
@@ -92,6 +156,9 @@ class ToolMetadata:
 
     # Capability category — used for discovery by the Planner
     capability: str = ToolCapability.UTILITY.value
+
+    # Source type — local in-process / MCP server / remote API
+    source_type: str = ToolSource.LOCAL.value
 
     # Execution constraints
     timeout: int = 30                # Max execution time (seconds)
@@ -209,6 +276,10 @@ class ToolRegistry:
                 Can be sync or async; the registry handles both.
             metadata: Rich metadata for discovery and enforcement.
         """
+        # Auto-fill the input schema from the function signature if none
+        # was declared — keeps the LLM/Planner tool contract always populated.
+        if not metadata.schema.get("properties"):
+            metadata.schema = infer_schema_from_signature(fn)
         self._tools[metadata.name] = fn
         self._metadata[metadata.name] = metadata
 
@@ -242,6 +313,9 @@ class ToolRegistry:
                     schema=meta_dict.get("schema", {}),
                     returns=meta_dict.get("returns", {}),
                     capability=meta_dict.get("capability", "utility"),
+                    source_type=meta_dict.get(
+                        "source_type", ToolSource.LOCAL.value
+                    ),
                     timeout=meta_dict.get("timeout", 30),
                     cost=meta_dict.get("cost", 1),
                     version=meta_dict.get("version", "1.0.0"),
@@ -313,12 +387,17 @@ class ToolRegistry:
                 return await _method(*args, **kwargs)
 
             wrapper.__name__ = tool_name
+            # Local in-process tools backed by the MarketDataProvider.
+            # (A TushareSdkProvider ultimately hits a remote API, but the
+            # provider is bridged in-process so the tool source is LOCAL.)
             meta = ToolMetadata(
                 name=tool_name,
                 description=f"Provider tool: {method_name} (capability {capability})",
                 capability=capability,
+                source_type=ToolSource.LOCAL.value,
                 version="1.0.0",
                 permission="read",
+                tags=["provider", method_name],
             )
             self.register(wrapper, meta)
             count += 1
@@ -364,7 +443,8 @@ class ToolRegistry:
         """Return tool schemas formatted for LLM tool-use API.
 
         Compatible with OpenAI/Anthropic tool-use format.
-        Each entry has: name, description, input_schema (JSON Schema).
+        Each entry has: name, description, input_schema (JSON Schema),
+        plus capability/source metadata for the Planner's tool reasoning.
         """
         schemas = []
         for meta in self._metadata.values():
@@ -372,6 +452,9 @@ class ToolRegistry:
                 "name": meta.name,
                 "description": meta.description,
                 "input_schema": meta.schema,
+                "capability": meta.capability,
+                "source_type": meta.source_type,
+                "cost": meta.cost,
             }
             schemas.append(schema)
         return schemas

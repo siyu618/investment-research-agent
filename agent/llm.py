@@ -47,7 +47,9 @@ class LLMBackend:
     def available(self) -> bool:
         return bool(self.api_key)
 
-    async def parse_investment_request(self, requirement: str) -> dict:
+    async def parse_investment_request(
+        self, requirement: str, span_sink: list[dict] | None = None,
+    ) -> dict:
         """Natural language → structured InvestmentRequest fields.
 
         Returns a dict matching InvestmentRequest.__dataclass_fields__.
@@ -65,10 +67,14 @@ class LLMBackend:
             f"Schema:\n{json.dumps(schema, ensure_ascii=False, indent=2)}"
         )
 
-        text = await self._complete(prompt, max_tokens=800)
+        text = await self._complete(prompt, max_tokens=800,
+                                    span_sink=span_sink,
+                                    span_name="parse_investment_request")
         return self._parse_json(text)
 
-    async def polish_report(self, report_md: str) -> str:
+    async def polish_report(
+        self, report_md: str, span_sink: list[dict] | None = None,
+    ) -> str:
         """Polish report prose (only wording; never numbers/structure)."""
         if not self.available:
             raise LLMUnavailable("ANTHROPIC_API_KEY not configured")
@@ -79,9 +85,13 @@ class LLMBackend:
             "section headings exactly as-is. Only improve wording.\n\n"
             f"{report_md}"
         )
-        return await self._complete(prompt, max_tokens=2000)
+        return await self._complete(prompt, max_tokens=2000,
+                                    span_sink=span_sink,
+                                    span_name="polish_report")
 
-    async def generate_plan(self, goal: str, tools: Any = None) -> dict:
+    async def generate_plan(
+        self, goal: str, tools: Any = None, span_sink: list[dict] | None = None,
+    ) -> dict:
         """Dynamically decompose a user goal into an analysis plan.
 
         The LLM selects analysis dimensions and maps each to available tool
@@ -114,13 +124,29 @@ class LLMBackend:
             "Select 3-5 analysis steps appropriate to the goal, mapping each "
             "to the best available tool. Dependencies must be acyclic."
         )
-        text = await self._complete(prompt, max_tokens=1200)
+        text = await self._complete(prompt, max_tokens=1200,
+                                    span_sink=span_sink,
+                                    span_name="generate_plan")
         return self._parse_json(text)
 
     # ─── Internal ──────────────────────────────────────────────────────
 
-    async def _complete(self, prompt: str, max_tokens: int) -> str:
+    async def _complete(
+        self,
+        prompt: str,
+        max_tokens: int,
+        span_sink: list[dict] | None = None,
+        span_name: str = "llm",
+    ) -> str:
+        """Call the LLM and return the text.
+
+        When `span_sink` is provided, records a real `kind="llm"` trace span
+        with token usage (input/output/cache) and duration_ms, feeding the
+        runtime's observability + AgentRunStats.token_usage.
+        """
         import httpx
+
+        from runtime.tracing.trace_span import trace_span
 
         headers = {
             "x-api-key": self.api_key,
@@ -132,19 +158,43 @@ class LLMBackend:
             "max_tokens": max_tokens,
             "messages": [{"role": "user", "content": prompt}],
         }
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.post(
-                    f"{self.base_url}/v1/messages", headers=headers, json=body
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                # Extract text from Anthropic content blocks
+
+        run_id = f"llm-{span_name}"
+        async with trace_span(
+            run_id, "llm", "llm", span_name, sink=span_sink,
+        ) as span:
+            span.set_input({"model": self.model, "prompt_chars": len(prompt),
+                            "max_tokens": max_tokens})
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+
+                    resp = await client.post(
+                        f"{self.base_url}/v1/messages", headers=headers, json=body
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                # Duration is computed by SpanEntry.finalize(); the usage
+                # block is what we contribute here.
+                # Capture real token usage from the API response (Anthropic
+                # usage block: input_tokens / output_tokens / cache_*).
+                usage = data.get("usage", {})
+                span.token_usage = {
+                    "input_tokens": usage.get("input_tokens", 0),
+                    "output_tokens": usage.get("output_tokens", 0),
+                    "cache_creation_input_tokens": usage.get(
+                        "cache_creation_input_tokens", 0),
+                    "cache_read_input_tokens": usage.get(
+                        "cache_read_input_tokens", 0),
+                }
                 blocks = data.get("content", [])
-                return "\n".join(b.get("text", "") for b in blocks if b.get("type") == "text")
-        except Exception as e:
-            logger.warning("LLM call failed: %s", e)
-            raise LLMUnavailable(str(e)) from e
+                text = "\n".join(
+                    b.get("text", "") for b in blocks if b.get("type") == "text"
+                )
+                span.set_output({"chars": len(text), "usage": span.token_usage})
+                return text
+            except Exception as e:
+                logger.warning("LLM call failed: %s", e)
+                raise LLMUnavailable(str(e)) from e
 
     @staticmethod
     def _parse_json(text: str) -> dict:

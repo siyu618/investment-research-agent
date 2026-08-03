@@ -63,6 +63,7 @@ class Executor:
         self.collector = DataCollector(provider, recorder, run_id)
         self.scheduler: Scheduler | None = None
         self._last_graph_result: GraphResult | None = None
+        self._last_plan: AnalysisPlan | None = None
         self._stocks: list = []
         self._dataset: ResearchDataset | None = None
         self._requested_codes: list[str] = []
@@ -73,6 +74,7 @@ class Executor:
 
     async def execute_plan(self, plan: AnalysisPlan) -> dict:
         """Execute an AnalysisPlan using the Scheduler."""
+        self._last_plan = plan
         for step in plan.analysis_steps:
             if step.skill == "data-collector":
                 self._requested_codes = list(step.params.get("stock_codes") or [])
@@ -313,17 +315,43 @@ class Executor:
         return outputs
 
     def _is_placeholder_node(self, node_id: str) -> bool:
-        """True for data-collector / verifier / report-generator nodes.
+        """True for orchestration nodes whose real logic lives outside the
+        skill modules (data-collector / portfolio-selection / verifier /
+        report-generator).
 
-        These are orchestration nodes whose real logic lives in the Harness,
-        not in a Skill. Their outputs are not part of deterministic analysis.
+        These are identified by their SKILL, not by their step id — dynamic
+        plans place them at varying positions. Their outputs are not part of
+        deterministic analysis, so replay excludes them.
         """
-        if node_id == "step-1":
-            return True  # data-collector
-        # placeholder skills are step 5-7 (portfolio/verifier/report-generator)
-        if node_id in ("step-5", "step-6", "step-7"):
-            return True
-        return False
+        placeholder_skills = {
+            "data-collector", "portfolio-selection", "verifier",
+            "report-generator",
+        }
+        skill = self._skill_for_node(node_id)
+        return skill in placeholder_skills
+
+    def _skill_for_node(self, node_id: str) -> str:
+        """Resolve the skill name for a node id (best-effort).
+
+        Maps back to the plan's step id (node id is 'step-{id}'); falls back
+        to the last executed graph's node label.
+        """
+        try:
+            step_id = int(node_id.split("-")[-1])
+        except (ValueError, IndexError):
+            step_id = -1
+        plan = getattr(self, "_last_plan", None)
+        if plan is not None:
+            for step in plan.analysis_steps:
+                if step.id == step_id:
+                    return step.skill
+        # Fallback: last graph result node label
+        if self._last_graph_result is not None:
+            nr = self._last_graph_result.node_results.get(node_id)
+            label = getattr(nr, "label", "") if nr else ""
+            if label and ":" in label:
+                return label.split(":")[0].strip()
+        return ""
 
     def get_graph_result(self) -> GraphResult | None:
         return self._last_graph_result

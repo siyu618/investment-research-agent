@@ -52,6 +52,7 @@ class AgentRunStats:
     tool_calls: int = 0
     tool_success: int = 0
     tool_failed: int = 0
+    llm_calls: int = 0
     latency_ms: int = 0
     token_usage: dict = field(default_factory=dict)
     evidence_count: int = 0      # data points cited in the final output
@@ -76,6 +77,7 @@ class AgentRunStats:
             "tool_success": self.tool_success,
             "tool_failed": self.tool_failed,
             "tool_success_rate": self.tool_success_rate,
+            "llm_calls": self.llm_calls,
             "latency_ms": self.latency_ms,
             "token_usage": self.token_usage,
             "evidence_count": self.evidence_count,
@@ -157,6 +159,7 @@ class AgentRuntime:
                 span.set_input({"goal": task.goal, "query": task.user_query})
                 plan = await self._plan(task, ctx)
                 task.plan = plan
+                ctx["plan"] = plan  # consumed by aggregator/reporter stages
                 span.set_output({"plan": str(type(plan))})
             task.status = "planned"
 
@@ -183,12 +186,18 @@ class AgentRuntime:
 
             task.status = "completed"
             task.completed_at = _dt.now().isoformat()
+            # Mirror the run context back to the caller so verification /
+            # plan are readable from the caller's context dict.
+            if context is not None:
+                context.update(ctx)
             return task
 
         except Exception as e:
             task.status = "failed"
             task.error = str(e)[:300]
             task.completed_at = _dt.now().isoformat()
+            if context is not None:
+                context.update(ctx)
             raise
 
     # ─── Stage implementations (override in subclasses / via injection) ─
@@ -197,10 +206,22 @@ class AgentRuntime:
         if self._planner is None:
             raise RuntimeError("AgentRuntime requires a planner")
         tools = ctx.get("tools")
-        if hasattr(self._planner, "plan_for_goal"):
-            return await self._planner.plan_for_goal(task.goal, tools=tools)
-        if hasattr(self._planner, "create_plan"):
-            return await self._planner.create_plan(task.user_query)
+        # The planner may record LLM/planning spans into the runtime sink.
+        try:
+            if hasattr(self._planner, "plan_for_goal"):
+                return await self._planner.plan_for_goal(
+                    task.goal, tools=tools, span_sink=self._span_sink,
+                )
+            if hasattr(self._planner, "create_plan"):
+                return await self._planner.create_plan(
+                    task.user_query, span_sink=self._span_sink,
+                )
+        except TypeError:
+            # Older planner signatures without span_sink
+            if hasattr(self._planner, "plan_for_goal"):
+                return await self._planner.plan_for_goal(task.goal, tools=tools)
+            if hasattr(self._planner, "create_plan"):
+                return await self._planner.create_plan(task.user_query)
         raise RuntimeError("Planner must expose plan_for_goal() or create_plan()")
 
     async def _execute(self, task: AgentTask, plan: Any, ctx: dict) -> Any:
@@ -225,12 +246,14 @@ class AgentRuntime:
     # ─── Stats / observability ─────────────────────────────────────────
 
     def collect_stats(self, task: AgentTask) -> AgentRunStats:
-        """Compute execution-quality metrics from the task's spans."""
+        """Compute execution-quality metrics from the task's spans.
+
+        The span sink is task-scoped (a single task per run), so every span
+        in it belongs to this run. LLM spans carry synthetic run_ids
+        (llm-<name>) and are aggregated by kind. Token usage is summed.
+        """
         stats = AgentRunStats(task_id=task.task_id)
-        # Aggregate from recorded spans (real data, not fabricated)
         for span in self._span_sink:
-            if span.get("run_id") != task.task_id:
-                continue
             kind = span.get("kind", "")
             if kind == "tool":
                 stats.tool_calls += 1
@@ -238,13 +261,24 @@ class AgentRuntime:
                     stats.tool_success += 1
                 else:
                     stats.tool_failed += 1
-            if kind == "skill" or kind == "agent":
+            if kind in ("skill", "agent"):
+                # Orchestration placeholder nodes (portfolio/verifier/report)
+                # are recorded as "not implemented" by the executor; they are
+                # NOT genuine failures. Only count real analysis skills.
+                name = (span.get("name") or "").lower()
+                if name in ("portfolio-selection", "verifier", "report-generator"):
+                    continue
                 stats.node_total += 1
                 if span.get("status") == "ok":
                     stats.node_success += 1
                 else:
                     stats.node_failed += 1
-            stats.token_usage.update(span.get("token_usage") or {})
+            if kind == "llm":
+                stats.llm_calls += 1
+            usage = span.get("token_usage") or {}
+            if usage:
+                for k, v in usage.items():
+                    stats.token_usage[k] = stats.token_usage.get(k, 0) + v
             dur = span.get("duration_ms", 0)
             if kind == "scheduler":
                 stats.latency_ms += dur

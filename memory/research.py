@@ -59,12 +59,23 @@ class ResearchMemory(MemoryProvider):
                 tags.append(f"stock:{value['stock_code']}")
             if "strategy" in value:
                 tags.append(f"strategy:{value['strategy']}")
+            # Knowledge subjects: company/industry/theme for cross-session reuse
+            if "subject_type" in value and "subject" in value:
+                tags.append(f"{value['subject_type']}:{value['subject']}")
+            elif "company" in value:
+                tags.append(f"company:{value['company']}")
 
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
                 """INSERT OR REPLACE INTO research (key, value, created_at, ttl_seconds, tags)
                    VALUES (?, ?, ?, ?, ?)""",
-                (key, json.dumps(value), datetime.now().isoformat(), ttl, json.dumps(tags)),
+                (
+                    key,
+                    json.dumps(value, ensure_ascii=False),
+                    datetime.now().isoformat(),
+                    ttl,
+                    json.dumps(tags, ensure_ascii=False),
+                ),
             )
 
     async def retrieve(self, key: str) -> Any | None:
@@ -115,6 +126,20 @@ class ResearchMemory(MemoryProvider):
     async def get_by_stock(self, stock_code: str, limit: int = 5) -> list[MemoryEntry]:
         """Convenience: get all research entries for a stock code."""
         return await self.search(f"stock:{stock_code}", limit)
+
+    async def get_by_subject(
+        self, subject_type: str, subject: str, limit: int = 10
+    ) -> list[MemoryEntry]:
+        """Get research entries for a knowledge subject (company/industry/theme).
+
+        Args:
+            subject_type: "company" | "industry" | "theme"
+            subject: e.g. "600519.SH" (company), "白酒" (industry), "AI" (theme)
+
+        Entries are tagged at store time with `{subject_type}:{subject}` in
+        the research `tags` column, enabling cross-session knowledge reuse.
+        """
+        return await self.search(f"{subject_type}:{subject}", limit)
 
     async def stats(self) -> MemoryStats:
         with sqlite3.connect(self.db_path) as conn:

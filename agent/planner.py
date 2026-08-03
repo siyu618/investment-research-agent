@@ -94,19 +94,21 @@ class Planner:
         self,
         requirement: str,
         available_skills: list[dict] | None = None,
+        span_sink: list[dict] | None = None,
     ) -> AnalysisPlan:
         """Parse user requirement and produce a structured AnalysisPlan.
 
         Tries LLM structured extraction first, falling back to rules.
         The returned plan is always deterministic (templated steps).
         """
-        request = await self._parse_requirement(requirement)
+        request = await self._parse_requirement(requirement, span_sink=span_sink)
         return self._request_to_plan(request)
 
     async def plan_for_goal(
         self,
         goal: str,
         tools: Any = None,
+        span_sink: list[dict] | None = None,
     ) -> AnalysisPlan:
         """Dynamically decompose a user goal into a task plan.
 
@@ -124,7 +126,11 @@ class Planner:
         if self.llm is not None and getattr(self.llm, "available", False) \
                 and hasattr(self.llm, "generate_plan"):
             try:
-                raw = await self.llm.generate_plan(goal, tools)
+                try:
+                    raw = await self.llm.generate_plan(goal, tools, span_sink=span_sink)
+                except TypeError:
+                    # Older LLM interface without span_sink
+                    raw = await self.llm.generate_plan(goal, tools)
                 if isinstance(raw, dict) and raw.get("steps"):
                     return self._llm_plan_to_analysis(goal, raw)
             except Exception:
@@ -172,8 +178,11 @@ class Planner:
         # Determine target (stock code or pool)
         import re as _re
 
-        codes = _re.findall(r"\b(\d{6}\.(SH|SZ|BJ))\b", goal, _re.IGNORECASE)
-        stock_codes = [f"{c}.{s.upper()}" for c, s in codes]
+        # Match full ts_code '600519.SH' (case-insensitive). findall with a
+        # capturing group returns only the group, so use a non-capturing
+        # group to get the whole code back.
+        codes = _re.findall(r"\b\d{6}\.(?:SH|SZ|BJ)\b", goal, _re.IGNORECASE)
+        stock_codes = [c.upper() for c in codes]
         target = "single" if stock_codes else "csi300"
 
         # Base: data collection
@@ -223,12 +232,19 @@ class Planner:
             risk_preference="medium",
         )
 
-    async def _parse_requirement(self, requirement: str) -> InvestmentRequest:
+    async def _parse_requirement(
+        self, requirement: str, span_sink: list[dict] | None = None,
+    ) -> InvestmentRequest:
         """Requirement → InvestmentRequest (LLM first, rules fallback)."""
         # 1. Try LLM structured extraction (bounded, Pydantic-validated)
         if self.llm is not None and getattr(self.llm, "available", False):
             try:
-                raw = await self.llm.parse_investment_request(requirement)
+                try:
+                    raw = await self.llm.parse_investment_request(
+                        requirement, span_sink=span_sink)
+                except TypeError:
+                    # Older LLM interface without span_sink
+                    raw = await self.llm.parse_investment_request(requirement)
                 merged = self._merge_llm_request(raw, requirement)
                 return merged
             except Exception:

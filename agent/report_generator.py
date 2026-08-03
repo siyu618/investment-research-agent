@@ -30,17 +30,24 @@ class ReportGenerator:
         results: dict[int, Any],
         verification: Any,
     ) -> InvestmentReport:
-        """Generate a structured report from analysis results."""
+        """Generate a structured report from analysis results.
+
+        Plan-aware: analysis steps are located by skill name via the plan's
+        step ids (not hard-coded step-1..4), so dynamically-decomposed plans
+        with any step count render correctly.
+        """
         report_id = f"report-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
 
-        # Extract step outputs
+        step_by_skill = self._map_skills_to_nodes(plan)
+
+        # Extract step outputs by skill role
         data_output = self._extract_step(results, "step-1")
-        fund_output = self._extract_step(results, "step-2")
-        val_output = self._extract_step(results, "step-3")
-        risk_output = self._extract_step(results, "step-4")
+        fund_output = self._extract_node(results, step_by_skill, "fundamental-analysis")
+        val_output = self._extract_node(results, step_by_skill, "valuation-analysis")
+        risk_output = self._extract_node(results, step_by_skill, "risk-analysis")
 
         market_overview = self._build_market_overview(data_output)
-        candidates = self._build_candidates(fund_output, val_output, risk_output)
+        candidates = self._build_candidates(fund_output, val_output, risk_output, plan)
 
         return InvestmentReport(
             report_id=report_id,
@@ -140,9 +147,16 @@ class ReportGenerator:
             f"共从股票池中获取 **{count}** 只股票数据。\n\n"
         )
 
-    def _build_candidates(self, fund, val, risk) -> list[Any]:
-        """Merge skill outputs into candidate list sorted by composite score."""
+    def _build_candidates(self, fund, val, risk, plan: Any = None) -> list[Any]:
+        """Merge skill outputs into candidate list sorted by composite score.
+
+        Weights come from the plan's strategy_weights when present (so a
+        value/growth/quality objective weights the composite accordingly);
+        otherwise the default 0.40/0.25/0.35 blend is used.
+        """
         from dataclasses import dataclass
+
+        w = self._composite_weights(plan)
 
         @dataclass
         class Candidate:
@@ -184,13 +198,12 @@ class ReportGenerator:
                 risk_raw = p.score if not isinstance(p, dict) else p.get("score", 0)
                 stock_map[ts].risk_score = float(risk_raw or 0)
 
-        # Compute composite
+        # Compute composite using plan-derived weights
         for c in stock_map.values():
-            w_fund, w_val, w_risk = 0.40, 0.25, 0.35
             c.composite_score = round(
-                c.fundamental_score * w_fund +
-                c.val_score * w_val +
-                c.risk_score * w_risk,
+                c.fundamental_score * w["fund"] +
+                c.val_score * w["val"] +
+                c.risk_score * w["risk"],
                 4,
             )
 
@@ -233,5 +246,41 @@ class ReportGenerator:
         return (
             f"基于综合评分，建议重点关注 **{top.name}（{top.ts_code}）**，"
             f"综合评分 {top.composite_score:.2f}。\n\n"
-            f"前 5 只候选股票按综合评分排序如上表所示。"
+            f"前 {len(candidates)} 只候选股票按综合评分排序如上表所示。"
         )
+
+    # ─── Plan-aware helpers ─────────────────────────────────────────────
+
+    @staticmethod
+    def _map_skills_to_nodes(plan: Any) -> dict[str, str]:
+        """Map skill name → node id (e.g. 'step-2') from the plan's steps."""
+        mapping: dict[str, str] = {}
+        for step in getattr(plan, "analysis_steps", []):
+            mapping.setdefault(getattr(step, "skill", ""), f"step-{step.id}")
+        return mapping
+
+    def _extract_node(self, results: dict, step_by_skill: dict, skill: str) -> dict | None:
+        """Extract a node's output by skill role (falls back to step-2..4)."""
+        node_id = step_by_skill.get(skill)
+        if node_id:
+            return self._extract_step(results, node_id)
+        # Fallback for legacy / template plans
+        legacy = {"fundamental-analysis": "step-2",
+                  "valuation-analysis": "step-3",
+                  "risk-analysis": "step-4"}.get(skill)
+        return self._extract_step(results, legacy) if legacy else None
+
+    @staticmethod
+    def _composite_weights(plan: Any) -> dict[str, float]:
+        """Plan-derived composite weights; default blend if none declared."""
+        weights = getattr(plan, "strategy_weights", None)
+        if not weights:
+            return {"fund": 0.40, "val": 0.25, "risk": 0.35}
+        # Normalize the three composite-relevant weights
+        f = weights.get("fundamental-analysis", 0.0)
+        v = weights.get("valuation-analysis", 0.0)
+        r = weights.get("risk-analysis", 0.0)
+        total = f + v + r
+        if total <= 0:
+            return {"fund": 0.40, "val": 0.25, "risk": 0.35}
+        return {"fund": f / total, "val": v / total, "risk": r / total}

@@ -2,11 +2,38 @@
 #
 # Each tool declares its schema, capability, cache policy, and rate limit.
 # The ToolRegistry loads this file to register all Tushare tools.
+#
+# source_type:
+#   local  — in-process Python function (MockMarketDataProvider)
+#   mcp    — exposed via a Model Context Protocol server
+#   api    — remote HTTP/RPC endpoint (e.g. raw Tushare API)
 
 tools:
   get_stock_basic:
     description: "List stocks by market and/or industry"
     capability: "market-data"
+    source_type: "local"
+    schema:
+      type: "object"
+      properties:
+        ts_codes:
+          type: "array"
+          items: {type: "string"}
+          description: "Optional explicit ts_codes (e.g. 600519.SH)"
+        market:
+          type: "string"
+          description: "SSE / SZSE / BSE"
+        industry:
+          type: "string"
+          description: "Industry name filter"
+    returns:
+      type: "array"
+      items:
+        type: "object"
+        properties:
+          ts_code: {type: "string"}
+          name: {type: "string"}
+          industry: {type: "string"}
     timeout: 10
     cost: 1
     version: "1.0.0"
@@ -23,6 +50,29 @@ tools:
   get_daily_price:
     description: "Get daily OHLCV price data for a stock over a date range"
     capability: "market-data"
+    source_type: "local"
+    schema:
+      type: "object"
+      properties:
+        ts_code:
+          type: "string"
+          description: "Stock code, e.g. 600519.SH"
+        start_date:
+          type: "string"
+          description: "YYYYMMDD"
+        end_date:
+          type: "string"
+          description: "YYYYMMDD"
+      required: [ts_code, start_date, end_date]
+    returns:
+      type: "array"
+      items:
+        type: "object"
+        properties:
+          ts_code: {type: "string"}
+          trade_date: {type: "string"}
+          close: {type: "number"}
+          volume: {type: "integer"}
     timeout: 15
     cost: 1
     version: "1.0.0"
@@ -36,6 +86,15 @@ tools:
   get_trade_calendar:
     description: "Get trading calendar dates between start and end date"
     capability: "market-data"
+    source_type: "local"
+    schema:
+      type: "object"
+      properties:
+        start_date: {type: "string"}
+        end_date: {type: "string"}
+    returns:
+      type: "array"
+      items: {type: "string", description: "Trading date YYYYMMDD"}
     timeout: 10
     cost: 1
     version: "1.0.0"
@@ -47,6 +106,17 @@ tools:
   get_income_statement:
     description: "Get income statement data for a stock over a date range"
     capability: "financials"
+    source_type: "api"
+    schema:
+      type: "object"
+      properties:
+        ts_code: {type: "string"}
+        start_date: {type: "string"}
+        end_date: {type: "string"}
+      required: [ts_code]
+    returns:
+      type: "array"
+      items: {type: "object"}
     timeout: 15
     cost: 2
     version: "1.0.0"
@@ -59,6 +129,17 @@ tools:
   get_balance_sheet:
     description: "Get balance sheet data for a stock"
     capability: "financials"
+    source_type: "api"
+    schema:
+      type: "object"
+      properties:
+        ts_code: {type: "string"}
+        start_date: {type: "string"}
+        end_date: {type: "string"}
+      required: [ts_code]
+    returns:
+      type: "array"
+      items: {type: "object"}
     timeout: 15
     cost: 2
     version: "1.0.0"
@@ -71,6 +152,17 @@ tools:
   get_cashflow:
     description: "Get cash flow statement data for a stock"
     capability: "financials"
+    source_type: "api"
+    schema:
+      type: "object"
+      properties:
+        ts_code: {type: "string"}
+        start_date: {type: "string"}
+        end_date: {type: "string"}
+      required: [ts_code]
+    returns:
+      type: "array"
+      items: {type: "object"}
     timeout: 15
     cost: 2
     version: "1.0.0"
@@ -83,6 +175,17 @@ tools:
   get_money_flow:
     description: "Get capital flow data for a stock"
     capability: "market-behavior"
+    source_type: "api"
+    schema:
+      type: "object"
+      properties:
+        ts_code: {type: "string"}
+        start_date: {type: "string"}
+        end_date: {type: "string"}
+      required: [ts_code]
+    returns:
+      type: "array"
+      items: {type: "object"}
     timeout: 10
     cost: 1
     version: "1.0.0"
@@ -96,6 +199,17 @@ tools:
   get_holder_change:
     description: "Get major holder changes for a stock"
     capability: "market-behavior"
+    source_type: "api"
+    schema:
+      type: "object"
+      properties:
+        ts_code: {type: "string"}
+        start_date: {type: "string"}
+        end_date: {type: "string"}
+      required: [ts_code]
+    returns:
+      type: "array"
+      items: {type: "object"}
     timeout: 15
     cost: 2
     version: "1.0.0"
@@ -108,6 +222,16 @@ tools:
   get_market_index:
     description: "Get market index OHLCV data"
     capability: "market-data"
+    source_type: "api"
+    schema:
+      type: "object"
+      properties:
+        index_code: {type: "string"}
+        start_date: {type: "string"}
+        end_date: {type: "string"}
+    returns:
+      type: "array"
+      items: {type: "object"}
     timeout: 10
     cost: 1
     version: "1.0.0"

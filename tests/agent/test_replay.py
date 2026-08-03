@@ -246,3 +246,38 @@ class TestReplayArtifactGate:
         assert manifest["manifest_version"] == "1.0.0"
         assert "execution_outputs.json" in manifest["artifacts"]
         assert "result_manifest.json" in manifest["artifacts"]
+
+
+class TestDynamicPlanPlaceholder:
+    """Placeholder detection is skill-based, not step-position-based.
+
+    Dynamic plans place portfolio/verifier/report at varying step ids
+    (e.g. step-4 in a 6-step screening plan). Replay must exclude them
+    regardless of position, or a live run won't match its replay.
+    """
+
+    def test_placeholder_detection_skill_based(self, tmp_path):
+        from agent.executor import Executor
+        from strategies.base.models import AnalysisPlan, AnalysisStep
+        from tools.providers import MockMarketDataProvider
+
+        plan = AnalysisPlan(
+            objective="screening",
+            strategy_weights={},
+            data_requirements=["csi300"],
+            analysis_steps=[
+                AnalysisStep(id=1, skill="data-collector", target="csi300"),
+                AnalysisStep(id=2, skill="fundamental-analysis", target="csi300"),
+                AnalysisStep(id=3, skill="valuation-analysis", target="csi300"),
+                AnalysisStep(id=4, skill="portfolio-selection", target="csi300"),
+                AnalysisStep(id=5, skill="verifier", target="csi300"),
+                AnalysisStep(id=6, skill="report-generator", target="csi300"),
+            ],
+        )
+        ex = Executor(provider=MockMarketDataProvider())
+        ex._last_plan = plan
+        # step-4 is portfolio-selection in this dynamic plan → placeholder
+        assert ex._is_placeholder_node("step-4") is True
+        # step-2/3 are real analysis skills → not placeholders
+        assert ex._is_placeholder_node("step-2") is False
+        assert ex._is_placeholder_node("step-3") is False

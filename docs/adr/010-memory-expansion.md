@@ -1,6 +1,6 @@
 # Architecture Decision Record: Memory Expansion Architecture
 
-**Status:** Proposed
+**Status:** Accepted
 **Decision:** #010
 **Date:** 2026-07-29
 

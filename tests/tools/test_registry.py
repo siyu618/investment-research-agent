@@ -308,3 +308,79 @@ class TestProviderRegistration:
         names = {t.name for t in financial_tools}
         assert "get_financial_summary" in names
         assert "get_income_statement" in names
+
+
+class TestToolSourceAndSchemas:
+    """ToolMetadata source_type + signature-inferred schemas."""
+
+    def test_default_source_is_local(self):
+        from tools.registry import ToolMetadata, ToolSource
+
+        meta = ToolMetadata(name="t", description="d")
+        assert meta.source_type == ToolSource.LOCAL.value
+
+    def test_source_type_from_yaml(self, tmp_path):
+        import yaml
+        from tools.registry import ToolRegistry, ToolSource
+
+        yaml_file = tmp_path / "tools.yaml"
+        yaml_file.write_text("""
+tools:
+  get_daily_price:
+    description: "prices"
+    capability: "market-data"
+    source_type: "api"
+    schema:
+      type: "object"
+      properties:
+        ts_code: {type: "string"}
+    module: "tools.providers.MockMarketDataProvider.get_daily_price"
+""", encoding="utf-8")
+        reg = ToolRegistry()
+        # No implementation resolvable via that module path in this context —
+        # registering metadata-only is fine for schema/source inspection.
+        reg.register_from_yaml(str(tmp_path))
+        meta = reg.get_tool("get_daily_price")
+        assert meta is not None
+        assert meta.source_type == ToolSource.API.value
+
+    def test_schema_inferred_from_signature(self):
+        from tools.registry import ToolRegistry, ToolMetadata
+
+        def fake_tool(ts_code: str, start_date: str, end_date: str, limit: int = 10) -> dict:
+            return {"ok": True}
+
+        reg = ToolRegistry()
+        reg.register(fake_tool, ToolMetadata(
+            name="fake_tool", description="inferred schema",
+            capability="market-data",
+        ))
+        meta = reg.get_tool("fake_tool")
+        props = meta.schema["properties"]
+        assert props["ts_code"]["type"] == "string"
+        assert props["limit"]["type"] == "integer"
+        assert props["limit"]["default"] == 10
+        assert set(meta.schema["required"]) == {"ts_code", "start_date", "end_date"}
+
+    def test_llm_schemas_carry_source_and_capability(self):
+        from tools.registry import ToolMetadata, ToolRegistry, ToolSource
+
+        reg = ToolRegistry()
+        reg.register(lambda: None, ToolMetadata(
+            name="remote_metric", description="remote",
+            capability="analysis", source_type=ToolSource.API.value,
+        ))
+        schemas = reg.get_schemas_for_llm()
+        entry = schemas[0]
+        assert entry["source_type"] == ToolSource.API.value
+        assert entry["capability"] == "analysis"
+
+    def test_provider_bridge_tags_source_local(self):
+        from tools.providers import MockMarketDataProvider
+        from tools.registry import ToolRegistry, ToolSource
+
+        reg = ToolRegistry()
+        reg.register_from_provider(MockMarketDataProvider())
+        meta = reg.get_tool("get_valuation")
+        assert meta.source_type == ToolSource.LOCAL.value
+        assert "provider" in meta.tags

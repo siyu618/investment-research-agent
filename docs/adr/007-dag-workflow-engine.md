@@ -1,6 +1,6 @@
 # Architecture Decision Record: DAG-based Workflow Engine
 
-**Status:** Proposed
+**Status:** Accepted
 **Decision:** #007
 **Date:** 2026-07-29
 
