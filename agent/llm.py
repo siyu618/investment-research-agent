@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from typing import Any
 
 logger = logging.getLogger("agent.llm")
 
@@ -79,6 +80,42 @@ class LLMBackend:
             f"{report_md}"
         )
         return await self._complete(prompt, max_tokens=2000)
+
+    async def generate_plan(self, goal: str, tools: Any = None) -> dict:
+        """Dynamically decompose a user goal into an analysis plan.
+
+        The LLM selects analysis dimensions and maps each to available tool
+        capabilities, producing a plan the Planner converts to an
+        AnalysisPlan. Falls back (raises LLMUnavailable) if no key.
+        """
+        if not self.available:
+            raise LLMUnavailable("ANTHROPIC_API_KEY not configured")
+
+        tool_caps = []
+        if tools is not None:
+            if hasattr(tools, "list_tools"):
+                for t in tools.list_tools():
+                    tool_caps.append({
+                        "name": getattr(t, "name", ""),
+                        "capability": getattr(t, "capability", ""),
+                        "description": getattr(t, "description", "")[:120],
+                    })
+
+        prompt = (
+            "Decompose the user's investment research goal into an analysis "
+            "plan. Return ONLY JSON with keys:\n"
+            '{"steps": [{"id": 1, "skill": "<analysis-skill>", '
+            '"tool": "<tool-name>", "depends_on": []}]}\n\n'
+            "Available skills: fundamental-analysis, technical-analysis, "
+            "valuation-analysis, risk-analysis, portfolio-selection, "
+            "verifier, report-generator.\n"
+            f"Available tools: {tool_caps}\n\n"
+            f"User goal: {goal}\n\n"
+            "Select 3-5 analysis steps appropriate to the goal, mapping each "
+            "to the best available tool. Dependencies must be acyclic."
+        )
+        text = await self._complete(prompt, max_tokens=1200)
+        return self._parse_json(text)
 
     # ─── Internal ──────────────────────────────────────────────────────
 

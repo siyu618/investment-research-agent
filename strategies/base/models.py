@@ -130,6 +130,7 @@ class AnalysisStep:
     depends_on: list[int] = field(default_factory=list)
     params: dict = field(default_factory=dict)
     status: str = "pending"  # pending | running | completed | failed | skipped
+    tool: str = ""           # optional tool name this step needs (Planner-selected)
 
 
 @dataclass

@@ -109,3 +109,53 @@ class TestSingleStockDetection:
         steps = {s.id: s for s in plan.analysis_steps}
         # portfolio selection (step 5) depends on fund/val/risk
         assert all(d in steps[5].depends_on for d in (2, 3, 4))
+
+
+class TestDynamicPlanning:
+    """Plan_for_goal decomposes a goal into intent-matched tasks."""
+
+    def setup_method(self):
+        self.planner = Planner()
+
+    @pytest.mark.asyncio
+    async def test_fundamental_goal_includes_fundamental(self):
+        plan = await self.planner.plan_for_goal("分析某股票的基本面财务健康")
+        skills = [s.skill for s in plan.analysis_steps]
+        assert "fundamental-analysis" in skills
+
+    @pytest.mark.asyncio
+    async def test_valuation_goal_includes_valuation(self):
+        plan = await self.planner.plan_for_goal("评估某股票的估值是否合理")
+        skills = [s.skill for s in plan.analysis_steps]
+        assert "valuation-analysis" in skills
+
+    @pytest.mark.asyncio
+    async def test_risk_goal_includes_risk(self):
+        plan = await self.planner.plan_for_goal("分析某股票的回撤和波动风险")
+        skills = [s.skill for s in plan.analysis_steps]
+        assert "risk-analysis" in skills
+
+    @pytest.mark.asyncio
+    async def test_default_goal_uses_core_set(self):
+        """No explicit intent → core fund/val/risk set."""
+        plan = await self.planner.plan_for_goal("分析某股票投资价值")
+        skills = [s.skill for s in plan.analysis_steps]
+        assert "fundamental-analysis" in skills
+        assert "valuation-analysis" in skills
+        assert "risk-analysis" in skills
+
+    @pytest.mark.asyncio
+    async def test_steps_have_tool_hints(self):
+        """Dynamic plan steps carry tool references for orchestration."""
+        plan = await self.planner.plan_for_goal("分析某股票的基本面")
+        for s in plan.analysis_steps:
+            if s.skill == "fundamental-analysis":
+                assert s.tool == "get_financial_summary"
+
+    @pytest.mark.asyncio
+    async def test_dynamic_plan_is_acyclic_dag(self):
+        """Dynamic plans produce valid dependency chains ending in report."""
+        plan = await self.planner.plan_for_goal("分析某股票投资价值")
+        skills = [s.skill for s in plan.analysis_steps]
+        assert skills[-1] == "report-generator"
+        assert "verifier" in skills

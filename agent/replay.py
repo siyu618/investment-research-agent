@@ -54,6 +54,7 @@ def plan_from_dict(d: dict) -> AnalysisPlan:
             depends_on=list(s.get("depends_on", [])),
             params=s.get("params", {}),
             status=s.get("status", "pending"),
+            tool=s.get("tool", ""),
         ))
     return AnalysisPlan(
         objective=d.get("objective", ""),

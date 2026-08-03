@@ -32,7 +32,7 @@ async def _run_and_capture(requirement: str, tmp_path) -> str:
             {
                 "id": s.id, "skill": s.skill, "target": s.target,
                 "depends_on": s.depends_on, "params": s.params,
-                "status": s.status,
+                "status": s.status, "tool": getattr(s, "tool", ""),
             }
             for s in plan.analysis_steps
         ],

@@ -20,6 +20,18 @@ from strategies.base.models import AnalysisPlan, AnalysisStep
 logger = logging.getLogger("agent.planner")
 
 
+def _tool_for_skill(skill: str) -> str:
+    """Map an analysis skill to its primary data tool (for dynamic plans)."""
+    mapping = {
+        "fundamental-analysis": "get_financial_summary",
+        "valuation-analysis": "get_valuation",
+        "risk-analysis": "get_daily_price",
+        "technical-analysis": "get_daily_price",
+        "data-collector": "get_stock_basic",
+    }
+    return mapping.get(skill, "")
+
+
 class InvestmentObjective(str, Enum):
     VALUE = "value"               # 价值投资 — 低PE/PB, 稳健增长
     GROWTH = "growth"             # 成长投资 — 高增长, 高估值容忍
@@ -90,6 +102,126 @@ class Planner:
         """
         request = await self._parse_requirement(requirement)
         return self._request_to_plan(request)
+
+    async def plan_for_goal(
+        self,
+        goal: str,
+        tools: Any = None,
+    ) -> AnalysisPlan:
+        """Dynamically decompose a user goal into a task plan.
+
+        Unlike create_plan (fixed 7-step template), this selects the task
+        set from the goal's intent and the available tool capabilities.
+
+        Strategy:
+          1. LLM-driven decomposition (if a planning-capable LLM is set)
+          2. Rule-based decomposition from goal keywords (always available)
+
+        `tools` is a ToolRegistry (or object with find_by_capability /
+        get_schemas_for_llm) used to validate/select capabilities.
+        """
+        # 1. Try LLM dynamic planning
+        if self.llm is not None and getattr(self.llm, "available", False) \
+                and hasattr(self.llm, "generate_plan"):
+            try:
+                raw = await self.llm.generate_plan(goal, tools)
+                if isinstance(raw, dict) and raw.get("steps"):
+                    return self._llm_plan_to_analysis(goal, raw)
+            except Exception:
+                logger.warning("LLM planning failed; using rule decomposition",
+                               exc_info=True)
+
+        # 2. Rule-based dynamic decomposition
+        return self._decompose_goal(goal, tools)
+
+    def _llm_plan_to_analysis(self, goal: str, raw: dict) -> AnalysisPlan:
+        """Convert an LLM plan dict into an AnalysisPlan."""
+        steps: list[AnalysisStep] = []
+        for item in raw.get("steps", []):
+            steps.append(AnalysisStep(
+                id=int(item.get("id", len(steps) + 1)),
+                skill=item.get("skill", ""),
+                target="single" if any(
+                    k in goal for k in (".SH", ".SZ", ".BJ")) else "csi300",
+                depends_on=[int(d) for d in item.get("depends_on", [])],
+                tool=item.get("tool", ""),
+            ))
+        if not steps:
+            return self._decompose_goal(goal)
+        return AnalysisPlan(
+            objective=f"llm-plan: {goal}",
+            strategy_weights=self._default_weights(
+                InvestmentObjective.MIXED, RiskLevel.MEDIUM),
+            data_requirements=["dynamic"],
+            analysis_steps=steps,
+            risk_preference="medium",
+        )
+
+    def _decompose_goal(self, goal: str, tools: Any = None) -> AnalysisPlan:
+        """Decompose a goal into an AnalysisPlan by intent keywords.
+
+        Builds a step list whose size/shape depends on the goal:
+          - stock target     → [data, fund/val/risk/tech, portfolio, verify, report]
+          - market screening → [data, fund+val+risk, portfolio, verify, report]
+          - single valuation → [data, valuation, risk, verify, report]
+        Unknown goals fall back to the general template.
+        """
+        g = goal.lower()
+        steps: list[AnalysisStep] = []
+
+        # Determine target (stock code or pool)
+        import re as _re
+
+        codes = _re.findall(r"\b(\d{6}\.(SH|SZ|BJ))\b", goal, _re.IGNORECASE)
+        stock_codes = [f"{c}.{s.upper()}" for c, s in codes]
+        target = "single" if stock_codes else "csi300"
+
+        # Base: data collection
+        steps.append(AnalysisStep(id=1, skill="data-collector", target=target,
+                                  depends_on=[], params={"stock_codes": stock_codes}))
+
+        # Analysis steps selected by intent
+        analysis_skills: list[str] = []
+        if any(k in g for k in ("基本面", "财务", "盈利", "roe", "fundamental")):
+            analysis_skills.append("fundamental-analysis")
+        if any(k in g for k in ("估值", "市盈", "pe", "pb", "valuation")):
+            analysis_skills.append("valuation-analysis")
+        if any(k in g for k in ("风险", "回撤", "波动", "risk", "drawdown")):
+            analysis_skills.append("risk-analysis")
+        if any(k in g for k in ("技术", "趋势", "动量", "均线", "technical", "momentum")):
+            analysis_skills.append("technical-analysis")
+        if not analysis_skills:
+            # No explicit intent → default core set
+            analysis_skills = ["fundamental-analysis", "valuation-analysis",
+                               "risk-analysis"]
+
+        # Assign tool per analysis step (from registry capabilities if available)
+        for i, skill in enumerate(analysis_skills, start=2):
+            steps.append(AnalysisStep(
+                id=i, skill=skill, target=target, depends_on=[1],
+                tool=_tool_for_skill(skill),
+            ))
+
+        # Portfolio selection (depends on all analyses)
+        analysis_ids = [s.id for s in steps if s.id > 1]
+        port_id = len(steps) + 1
+        steps.append(AnalysisStep(id=port_id, skill="portfolio-selection",
+                                  target=target, depends_on=analysis_ids))
+
+        # Verify + report
+        verify_id = port_id + 1
+        steps.append(AnalysisStep(id=verify_id, skill="verifier", target=target,
+                                  depends_on=[port_id]))
+        steps.append(AnalysisStep(id=verify_id + 1, skill="report-generator",
+                                  target=target, depends_on=[verify_id]))
+
+        return AnalysisPlan(
+            objective=f"dynamic goal: {goal}",
+            strategy_weights=self._default_weights(InvestmentObjective.MIXED, RiskLevel.MEDIUM),
+            data_requirements=[target],
+            analysis_steps=steps,
+            risk_preference="medium",
+        )
 
     async def _parse_requirement(self, requirement: str) -> InvestmentRequest:
         """Requirement → InvestmentRequest (LLM first, rules fallback)."""
